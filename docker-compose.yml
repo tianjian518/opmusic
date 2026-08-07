@@ -1,0 +1,18 @@
+services:
+  opmusic:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: opmusic:latest
+    container_name: opmusic
+    ports:
+      - "8080:8080"
+    environment:
+      # 可选：设置后全站启用 Basic Auth 鉴权（强烈建议公网暴露时开启）
+      - TJ_USER=
+      - TJ_PASSWORD=
+      - PORT=8080
+    volumes:
+      # 账号与在线元数据缓存持久化（含 WebDAV 密码，注意权限）
+      - ./data:/data
+    restart: unless-stopped

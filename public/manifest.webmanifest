@@ -1,0 +1,19 @@
+{
+  "name": "OpMusic",
+  "short_name": "OpMusic",
+  "description": "连接 WebDAV 网盘、播放本地与云端音乐的播放器",
+  "start_url": ".",
+  "scope": ".",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#0f0f12",
+  "theme_color": "#0f0f12",
+  "icons": [
+    {
+      "src": "./icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}

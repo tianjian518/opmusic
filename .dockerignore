@@ -1,0 +1,11 @@
+node_modules
+dist
+dist-electron
+release
+.capacitor
+.cache
+.git
+*.log
+npm-debug.log*
+.DS_Store
+buildResources

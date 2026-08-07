@@ -1,0 +1,84 @@
+{
+  "name": "opmusic",
+  "version": "0.1.0",
+  "description": "OpMusic —— 支持 WebDAV 的自托管音乐播放器",
+  "main": "dist-electron/main/index.js",
+  "author": {
+    "name": "QM-346",
+    "email": "qm346@example.com"
+  },
+  "homepage": "https://github.com/QM-346/opmusic",
+  "license": "MIT",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "web": "vite build && vite preview --host --port 4173",
+    "build:server": "VITE_SERVER_MODE=true vite build --config vite.server.config.ts",
+    "start:server": "node server/index.mjs",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "dist:linux": "npm run build && electron-builder --linux dir && bash scripts/makedeb.sh",
+    "dist:win": "npm run build && electron-builder --win dir --x64 && bash scripts/makewinzip.sh"
+  },
+  "dependencies": {
+    "electron-store": "^8.2.0",
+    "music-metadata": "^11.14.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "webdav": "^5.2.1",
+    "zustand": "^4.5.5"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.0",
+    "@types/react": "^18.3.3",
+    "@types/react-dom": "^18.3.0",
+    "@vitejs/plugin-react": "^4.3.1",
+    "concurrently": "^8.2.2",
+    "electron": "^31.3.0",
+    "electron-builder": "^26.15.3",
+    "typescript": "^5.5.4",
+    "vite": "^5.4.2",
+    "vite-plugin-electron": "^0.28.0",
+    "vite-plugin-electron-renderer": "^0.14.1",
+    "wait-on": "^7.2.0"
+  },
+  "overrides": {
+    "@noble/hashes": "1.5.0"
+  },
+  "build": {
+    "appId": "com.qm346.tianjian",
+    "productName": "OpMusic",
+    "copyright": "Copyright © 2026 QM-346",
+    "files": [
+      "dist-electron/**/*",
+      "dist/**/*"
+    ],
+    "extraResources": [
+      {
+        "from": "bin",
+        "to": "bin"
+      }
+    ],
+    "directories": {
+      "output": "release",
+      "buildResources": "buildResources"
+    },
+    "linux": {
+      "target": [
+        "AppImage",
+        "deb"
+      ],
+      "category": "Audio",
+      "maintainer": "QM-346 <qm346@example.com>",
+      "artifactName": "${productName}-${version}-linux-${arch}.${ext}"
+    },
+    "win": {
+      "target": [
+        "portable",
+        "zip"
+      ],
+      "signExecutable": false,
+      "artifactName": "${productName}-${version}-win-${arch}.${ext}"
+    }
+  }
+}
