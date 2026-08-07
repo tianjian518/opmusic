@@ -27,15 +27,20 @@ jobs:
 
       - name: 从 Docker Hub Token 反查用户名
         id: whoami
+        env:
+          FALLBACK: ${{ secrets.DOCKERHUB_USERNAME }}
         run: |
           USER=$(curl -fsS -H "Authorization: Bearer ${{ secrets.DOCKERHUB_TOKEN }}" \
                   https://hub.docker.com/v2/user/ | jq -r .username)
+          USER="${USER//[[:space:]]/}"   # 去空格/换行，避免 login 报凭据错
+          if [ -z "$USER" ]; then USER="$FALLBACK"; fi
           echo "username=$USER" >> "$GITHUB_OUTPUT"
           echo "Docker Hub 用户名: $USER"
 
       - name: Login to Docker Hub
         uses: docker/login-action@v3
         with:
+          registry: docker.io
           username: ${{ steps.whoami.outputs.username }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
