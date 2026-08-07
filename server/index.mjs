@@ -214,6 +214,28 @@ async function handleApi(req, res, url) {
     clientCache.delete(id)
     return sendJson(res, 200, { ok: true })
   }
+  // /api/list —— 服务端代理列目录（后端用服务端凭据连 WebDAV，彻底绕开浏览器 CORS）
+  if (url.pathname === '/api/list') {
+    const acct = url.searchParams.get('acct') || ''
+    const p = decodeURIComponent(url.searchParams.get('path') || '/')
+    try {
+      const client = getClient(acct)
+      const items = await client.getDirectoryContents(p, { includeSelf: false })
+      const arr = Array.isArray(items) ? items : (items?.data || [])
+      const out = arr
+        .map((it) => ({
+          name: it.basename,
+          path: it.filename,
+          isDir: it.type === 'directory',
+          size: it.size || 0,
+          lastmod: it.lastmod || ''
+        }))
+        .sort((a, b) => (a.isDir === b.isDir ? a.name.localeCompare(b.name, 'zh') : a.isDir ? -1 : 1))
+      return sendJson(res, 200, { items: out })
+    } catch (e) {
+      return sendJson(res, 500, { error: String(e?.message || e) })
+    }
+  }
   // /api/tags
   if (url.pathname === '/api/tags') {
     const acct = url.searchParams.get('acct') || ''

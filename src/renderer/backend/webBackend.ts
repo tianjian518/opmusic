@@ -101,11 +101,22 @@ async function listFiles(accountId: string, dir: string): Promise<FileItem[]> {
   return mapItems(arr as any[])
 }
 
+// 服务端模式：列目录走同源后端 /api/list（后端用服务端凭据连 WebDAV，彻底绕开浏览器 CORS）
+async function serverListFiles(accountId: string, dir: string): Promise<FileItem[]> {
+  const r = await fetch(`/api/list?acct=${encodeURIComponent(accountId)}&path=${encodeURIComponent(dir)}`)
+  if (!r.ok) throw new Error('列目录失败: ' + r.status)
+  const j = await r.json()
+  return (j.items || []) as FileItem[]
+}
+
+// 当前生效的列表函数（SERVER 模式走后端代理，否则浏览器直连 WebDAV）
+const activeList = SERVER ? serverListFiles : listFiles
+
 async function collectAudio(accountId: string, dir: string, depth = 6): Promise<FileItem[]> {
   const out: FileItem[] = []
   async function walk(d: string, dep: number) {
     if (dep > depth) return
-    const list = await listFiles(accountId, d)
+    const list = await activeList(accountId, d)
     for (const it of list) {
       if (it.isDir) await walk(it.path, dep + 1)
       else if (isAudio(it.name)) out.push(it)
@@ -120,7 +131,7 @@ async function search(accountId: string, root: string, kw: string, depth = 3): P
   const out: FileItem[] = []
   async function walk(dir: string, d: number) {
     if (d > depth) return
-    const list = await listFiles(accountId, dir)
+    const list = await activeList(accountId, dir)
     for (const it of list) {
       if (it.name.toLowerCase().includes(kwl)) out.push(it)
       if (it.isDir) await walk(it.path, d + 1)
@@ -170,7 +181,7 @@ export const webBackend: Backend = {
   },
 
   files: {
-    list: listFiles,
+    list: activeList,
     search,
     collectAudio
   },
@@ -180,6 +191,7 @@ export const webBackend: Backend = {
     url: async (acct, filePath) => {
       const base = nativeStreamBase()
       if (base) return `${base}/stream?acct=${encodeURIComponent(acct)}&path=${encodeURIComponent(filePath)}`
+      if (SERVER) return `/stream?acct=${encodeURIComponent(acct)}&path=${encodeURIComponent(filePath)}`
       const acc = readAccounts().find((a) => a.id === acct)
       if (!acc) throw new Error('账号不存在')
       return webdavDirectUrl(acc, filePath)
@@ -188,6 +200,14 @@ export const webBackend: Backend = {
       const base = nativeStreamBase()
       if (base) {
         let u = `${base}/cover?acct=${encodeURIComponent(acct)}&path=${encodeURIComponent(dir)}`
+        if (artist) u += `&artist=${encodeURIComponent(artist)}`
+        if (album) u += `&album=${encodeURIComponent(album)}`
+        if (title) u += `&title=${encodeURIComponent(title)}`
+        return u
+      }
+      // 服务端模式：封面走同源后端 /cover（能用网盘内 folder.jpg，也支持在线刮削兜底）
+      if (SERVER) {
+        let u = `/cover?acct=${encodeURIComponent(acct)}&path=${encodeURIComponent(dir)}`
         if (artist) u += `&artist=${encodeURIComponent(artist)}`
         if (album) u += `&album=${encodeURIComponent(album)}`
         if (title) u += `&title=${encodeURIComponent(title)}`
@@ -203,6 +223,7 @@ export const webBackend: Backend = {
     lyricsUrl: async (acct, filePath) => {
       const base = nativeStreamBase()
       if (base) return `${base}/lyrics?acct=${encodeURIComponent(acct)}&path=${encodeURIComponent(filePath)}`
+      if (SERVER) return `/lyrics?acct=${encodeURIComponent(acct)}&path=${encodeURIComponent(filePath)}`
       return '' // 纯浏览器无本地代理：由 loadLyrics 自动降级到在线歌词
     }
   },
