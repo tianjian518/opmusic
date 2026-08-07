@@ -90,7 +90,12 @@ export default function App() {
                 <PlaylistsView />
               </div>
             )}
-            {mtab === 'settings' && <SettingsPanel />}
+            {mtab === 'settings' && (
+              <>
+                <SettingsPanel />
+                <Connections />
+              </>
+            )}
           </main>
 
           {/* 复用同一个 PlayerBar（它持有唯一的 <audio>），在手机上被压成迷你条 */}
@@ -98,20 +103,16 @@ export default function App() {
 
           <nav className="m-tabbar">
             <button className={mtab === 'library' ? 'active' : ''} onClick={() => setMtab('library')}>
-              <span className="ico">📁</span>
-              <span className="lbl">音乐库</span>
+              音乐库
             </button>
             <button className={mtab === 'mine' ? 'active' : ''} onClick={() => setMtab('mine')}>
-              <span className="ico">❤️</span>
-              <span className="lbl">我的</span>
+              我的
             </button>
             <button className={showNowPlaying ? 'active' : ''} onClick={() => setShowNowPlaying(true)}>
-              <span className="ico">🎴</span>
-              <span className="lbl">播放中</span>
+              播放中
             </button>
             <button className={mtab === 'settings' ? 'active' : ''} onClick={() => setMtab('settings')}>
-              <span className="ico">⚙️</span>
-              <span className="lbl">设置</span>
+              设置
             </button>
           </nav>
 

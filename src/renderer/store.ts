@@ -237,6 +237,10 @@ export const useStore = create<State>((set, get) => ({
   removeAccount: async (id) => {
     await api.accounts.delete(id)
     await get().loadAccounts()
+    // 删掉的是当前正在用的账号时，清空 activeAccount，否则 FileBrowser 会拿着已删除的 id 去列目录报错
+    if (get().activeAccount === id) {
+      set({ activeAccount: '', currentDir: '/', files: [], searchResults: null })
+    }
   },
   openDir: async (acct, dir) => {
     const files = await api.files.list(acct, dir)
