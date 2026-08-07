@@ -1,0 +1,53 @@
+name: Build & Push Docker Image
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  IMAGE_NAME: opmusic   # Docker Hub 镜像名（仓库名）
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up QEMU（多架构）
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: 从 Docker Hub Token 反查用户名
+        id: whoami
+        run: |
+          USER=$(curl -fsS -H "Authorization: Bearer ${{ secrets.DOCKERHUB_TOKEN }}" \
+                  https://hub.docker.com/v2/user/ | jq -r .username)
+          echo "username=$USER" >> "$GITHUB_OUTPUT"
+          echo "Docker Hub 用户名: $USER"
+
+      - name: Login to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ steps.whoami.outputs.username }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: 构建并推送（linux/amd64 + linux/arm64）
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: |
+            ${{ steps.whoami.outputs.username }}/${{ env.IMAGE_NAME }}:latest
+            ${{ steps.whoami.outputs.username }}/${{ env.IMAGE_NAME }}:${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

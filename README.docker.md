@@ -24,21 +24,21 @@
 ## 构建镜像
 ```bash
 # 在能联网、装了 Docker 的机器上
-docker build -t <你的DockerHub用户名>/opmusic:latest .
+docker build -t tianjian518/opmusic:latest .
 ```
 > 镜像架构 = 构建机架构（amd64 / arm64）。如需多架构，用 `docker buildx build --platform linux/amd64,linux/arm64`。
 
 ## 推送到 Docker Hub
 ```bash
 docker login
-docker push <你的DockerHub用户名>/opmusic:latest
+docker push tianjian518/opmusic:latest
 ```
 
 ## 运行
 ```bash
 # 最简：数据存到当前目录 ./data
 docker run -d --name opmusic -p 8080:8080 -v "$PWD/data:/data" \
-  <你的DockerHub用户名>/opmusic:latest
+  tianjian518/opmusic:latest
 
 # 用 docker-compose（已内置）
 docker compose up -d
@@ -50,7 +50,7 @@ docker compose up -d
   ```bash
   docker run -d -p 8080:8080 -v "$PWD/data:/data" \
     -e TJ_USER=admin -e TJ_PASSWORD=你的强密码 \
-    <你的DockerHub用户名>/opmusic:latest
+    tianjian518/opmusic:latest
   ```
 - 在反向代理（Nginx/Caddy）后加 HTTPS；不要把 8080 直接暴露在公网且无鉴权。
 - `/data/accounts.json` 里是**明文** WebDAV 密码，保护好这个卷的权限。
