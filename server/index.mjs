@@ -5,7 +5,8 @@
 //   3) /cover                 优先读目录内 folder.jpg/cover.jpg，缺失则在线刮削兜底
 //   4) /lyrics                读同名 .lrc
 //   5) /tags /duration        用 ffprobe / music-metadata 读内嵌标签与真实时长
-//   6) 静态托管前端 dist/（SPA 回退）
+//   6) /api/store             通用键值存储（歌单/收藏/设置 服务端持久化，跨设备共享）
+//   7) 静态托管前端 dist/（SPA 回退）
 // 直接用 `node server/index.mjs` 运行；Docker 中由镜像入口启动。
 import http from 'node:http'
 import fs from 'node:fs'
@@ -13,7 +14,7 @@ import path from 'node:path'
 import { spawn, execFileSync } from 'node:child_process'
 import { createClient } from 'webdav'
 import * as mm from 'music-metadata'
-import { getAccounts, getAccount, upsertAccount, deleteAccount } from './store.mjs'
+import { getAccounts, getAccount, upsertAccount, deleteAccount, getKV, setKV } from './store.mjs'
 import { coverBytesFor } from './cover.mjs'
 
 const PORT = parseInt(process.env.PORT || '8080', 10)
@@ -212,6 +213,17 @@ async function handleApi(req, res, url) {
     const id = decodeURIComponent(delMatch[1])
     deleteAccount(id)
     clientCache.delete(id)
+    return sendJson(res, 200, { ok: true })
+  }
+  // /api/store —— 通用键值存储（歌单/收藏/设置 等用户数据，服务端持久化到 /data/store.json）
+  if (url.pathname === '/api/store' && req.method === 'GET') {
+    const key = url.searchParams.get('key') || ''
+    return sendJson(res, 200, { value: getKV(key) })
+  }
+  if (url.pathname === '/api/store' && req.method === 'POST') {
+    const body = await readBody(req)
+    if (!body || !body.key) return sendJson(res, 400, { error: 'key required' })
+    setKV(body.key, body.value)
     return sendJson(res, 200, { ok: true })
   }
   // /api/list —— 服务端代理列目录（后端用服务端凭据连 WebDAV，彻底绕开浏览器 CORS）

@@ -289,8 +289,35 @@ export const webBackend: Backend = {
   },
 
   store: {
-    get: async <T = any>(key: string): Promise<T> => lsGet<T>(key, (undefined as unknown) as T),
-    set: async (key, val) => lsSet(key, val)
+    get: async <T = any>(key: string): Promise<T> => {
+      // 服务端模式：从后端 /api/store 读取（数据存在服务器 /data，跨设备/跨浏览器共享）
+      if (SERVER) {
+        try {
+          const r = await fetch('/api/store?key=' + encodeURIComponent(key))
+          if (r.ok) return (await r.json()).value as T
+        } catch {
+          /* 后端不可达时降级到 localStorage */
+        }
+        return lsGet<T>(key, (undefined as unknown) as T)
+      }
+      return lsGet<T>(key, (undefined as unknown) as T)
+    },
+    set: async (key, val) => {
+      // 服务端模式：写入后端 /api/store（服务端持久化，换设备也不丢）
+      if (SERVER) {
+        try {
+          await fetch('/api/store', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ key, value: val })
+          })
+          return
+        } catch {
+          /* 后端不可达时降级到 localStorage */
+        }
+      }
+      lsSet(key, val)
+    }
   },
 
   lyric: {

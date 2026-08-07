@@ -49,3 +49,18 @@ export function getMetaCache() {
 export function setMetaCache(all) {
   writeJson(METACACHE_FILE, all)
 }
+
+// ---- 通用键值存储（歌单 / 收藏 / 设置 等用户数据，服务端持久化到 /data/store.json）----
+// 让换浏览器、换设备、换电脑都能读到同一份数据，不再依赖浏览器 localStorage。
+const STORE_FILE = path.join(DATA_DIR, 'store.json')
+
+export function getKV(key) {
+  const obj = readJson(STORE_FILE, {})
+  return obj[key]
+}
+export function setKV(key, val) {
+  const obj = readJson(STORE_FILE, {})
+  obj[key] = val
+  writeJson(STORE_FILE, obj)
+  return val
+}
