@@ -904,92 +904,122 @@ input.search {
   flex: 0 0 auto;
 }
 
-/* ===== 手机/窄屏适配 ===== */
-@media (max-width: 820px) {
-  .app {
-    display: block;
-    height: auto;
-    min-height: 100%;
-  }
-  /* 侧栏变顶部横排导航 */
-  .sidebar {
-    position: fixed;
-    top: 0;
-    left: 0;
-    right: 0;
-    flex-direction: row;
-    align-items: center;
-    gap: 4px;
-    padding: 6px 8px;
-    overflow-x: auto;
-    z-index: 30;
-    border-right: none;
-    border-bottom: 1px solid var(--line);
-  }
-  .sidebar .brand {
-    display: none;
-  }
-  .nav-item {
-    white-space: nowrap;
-    padding: 8px 10px;
-  }
-  .main {
-    padding: 60px 14px 150px;
-  }
-  /* 播放条固定底部，自动换行 */
-  .player {
-    position: fixed;
-    left: 0;
-    right: 0;
-    bottom: 0;
-    grid-column: auto;
-    flex-wrap: wrap;
-    gap: 10px;
-    padding: 8px 12px;
-    z-index: 30;
-  }
-  .now {
-    width: auto;
-    flex: 1;
-    min-width: 0;
-  }
-  .progress {
-    flex: 1 1 100%;
-    order: 5;
-  }
-  .vol {
-    display: none;
-  }
-  .cover {
-    width: 48px;
-    height: 48px;
-  }
-  /* 全屏播放页：上下堆叠、可滚动 */
-  .nowplaying {
-    flex-direction: column;
-    overflow-y: auto;
-  }
-  .np-left {
-    padding: 58px 20px 18px;
-    flex: none;
-  }
-  .np-right {
-    width: 100%;
-    max-width: none;
-    padding: 10px 16px 90px;
-    overflow: visible;
-  }
-  .np-disc {
-    width: min(62vw, 300px);
-    height: min(62vw, 300px);
-  }
-  .np-lyrics {
-    height: auto;
-    min-height: 42vh;
-  }
-  /* 歌单卡片内按钮换行友好 */
-  .toolbar input.search {
-    width: 100%;
-  }
+/* ===== 手机版布局 =====
+   由 App.tsx 在窄屏（matchMedia max-width:820px）时给根容器加 .mobile 类触发；
+   桌面版 .app 不带该类，以下规则不会影响桌面。 */
+.app.mobile {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  overflow: hidden;
 }
+
+/* 顶部精简栏 */
+.app.mobile .m-top {
+  flex: 0 0 auto;
+  height: 52px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 14px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--line);
+  z-index: 20;
+}
+.app.mobile .m-brand { font-weight: 700; font-size: 18px; }
+.app.mobile .m-spacer { flex: 1; }
+
+/* 主内容滚动区：底部留白给迷你播放条(64) + 底部 Tab(56) */
+.app.mobile .m-main {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  padding: 10px 12px calc(56px + 72px + 16px);
+}
+.app.mobile h3 { margin: 14px 4px 8px; }
+
+/* 迷你播放条：复用同一个 PlayerBar，压成单行固定条 */
+.app.mobile .player {
+  position: fixed;
+  left: 0; right: 0;
+  bottom: 56px;            /* 紧贴在底部 Tab 之上 */
+  z-index: 40;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  height: 64px;
+  padding: 8px 12px;
+  background: var(--panel);
+  border-top: 1px solid var(--line);
+  flex-wrap: nowrap;
+}
+.app.mobile .player .cover { width: 48px; height: 48px; border-radius: 8px; flex: 0 0 auto; }
+.app.mobile .player .now { flex: 1 1 auto; min-width: 0; cursor: pointer; }
+.app.mobile .player .now .t { font-size: 14px; }
+.app.mobile .player .now .s { font-size: 11px; opacity: .7; }
+.app.mobile .player .controls { flex: 0 0 auto; display: flex; align-items: center; gap: 2px; }
+.app.mobile .player .controls button { font-size: 18px; padding: 6px 6px; }
+/* 手机迷你条只保留：封面 / 标题 / 上一首 / 播放 / 下一首，其余隐藏 */
+.app.mobile .player .progress,
+.app.mobile .player .vol,
+.app.mobile .player .now-btn,
+.app.mobile .player .ghost,
+.app.mobile .player > button { display: none; }
+
+/* 底部 Tab 导航（QQ 音乐式） */
+.app.mobile .m-tabbar {
+  position: fixed;
+  left: 0; right: 0; bottom: 0;
+  z-index: 41;
+  height: 56px;
+  display: flex;
+  background: var(--panel);
+  border-top: 1px solid var(--line);
+  padding-bottom: env(safe-area-inset-bottom, 0);
+}
+.app.mobile .m-tabbar button {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  background: none;
+  border: none;
+  color: var(--text-2);
+  cursor: pointer;
+  font-size: 20px;
+}
+.app.mobile .m-tabbar button .lbl { font-size: 11px; }
+.app.mobile .m-tabbar button.active { color: var(--accent); }
+
+/* 触摸友好的列表项 */
+.app.mobile .item { padding: 13px 10px; }
+.app.mobile .list { display: block; }
+.app.mobile .card { margin-bottom: 10px; }
+.app.mobile .toolbar { flex-wrap: wrap; gap: 8px; }
+.app.mobile .toolbar input,
+.app.mobile .toolbar select { height: 38px; flex: 1 1 auto; }
+.app.mobile .crumbs { flex-wrap: wrap; margin: 6px 0 10px; }
+.app.mobile .file-item { padding: 12px 8px; }
+
+/* 设置面板在手机上变为普通全宽可滚动块 */
+.app.mobile .panel,
+.app.mobile .panel.side-panel {
+  position: static;
+  width: auto;
+  max-width: none;
+  height: auto;
+  box-shadow: none;
+  overflow: visible;
+  background: transparent;
+  padding: 0;
+}
+
+/* 全屏播放页：上下堆叠、可滚动（手机原生体验） */
+.app.mobile .nowplaying { flex-direction: column; overflow-y: auto; }
+.app.mobile .np-left { padding: 58px 20px 18px; flex: none; }
+.app.mobile .np-right { width: 100%; max-width: none; padding: 10px 16px 90px; overflow: visible; }
+.app.mobile .np-disc { width: min(62vw, 300px); height: min(62vw, 300px); }
+.app.mobile .np-lyrics { height: auto; min-height: 42vh; }
 

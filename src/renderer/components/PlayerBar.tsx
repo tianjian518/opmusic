@@ -275,7 +275,7 @@ export default function PlayerBar() {
         onClick={() => setShowNowPlaying(true)}
         title="点击进入全屏播放"
       />
-      <div className="now">
+      <div className="now" onClick={() => setShowNowPlaying(true)}>
         <div className="t">{cur ? cur.name : '未播放'}</div>
         <div className="s">
           {queue.length ? `队列 ${currentIndex + 1}/${queue.length}` : '从音乐库选一首歌吧'}

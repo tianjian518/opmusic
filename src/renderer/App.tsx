@@ -13,9 +13,25 @@ import NowPlaying from './components/NowPlaying'
 
 type View = 'library' | 'favorites' | 'playlists'
 
+// 窄屏（手机）检测：命中时在根容器加 .mobile 类，触发手机版布局；桌面版完全不受影响。
+function useIsMobile(): boolean {
+  const [m, setM] = useState(() =>
+    typeof window !== 'undefined' && window.matchMedia('(max-width: 820px)').matches
+  )
+  useEffect(() => {
+    const mq = window.matchMedia('(max-width: 820px)')
+    const handler = () => setM(mq.matches)
+    mq.addEventListener('change', handler)
+    return () => mq.removeEventListener('change', handler)
+  }, [])
+  return m
+}
+
 export default function App() {
   const { loadAccounts, restorePlayback, settings, toggle, toast, showNowPlaying, setShowNowPlaying } = useStore()
   const [view, setView] = useState<View>('library')
+  const [mtab, setMtab] = useState<'library' | 'mine' | 'settings'>('library')
+  const isMobile = useIsMobile()
   const s = useStore()
   const withSide = s.showLyrics || s.showPlaylist || s.showInfo || s.showEq || s.showSettings
 
@@ -54,6 +70,57 @@ export default function App() {
     : settings.bgGradient
     ? { background: settings.bgGradient }
     : {}
+
+  if (isMobile) {
+    const hasLib = !!s.accounts.length && !!s.activeAccount
+    return (
+      <>
+        <div className="app-bg" style={bgStyle} />
+        <div className="app mobile">
+          <header className="m-top">
+            <div className="m-brand">🎵 OpMusic</div>
+            <div className="m-spacer" />
+          </header>
+
+          <main className="m-main">
+            {mtab === 'library' && (hasLib ? <FileBrowser /> : <Connections />)}
+            {mtab === 'mine' && (
+              <div className="m-mine">
+                <FavoritesView />
+                <PlaylistsView />
+              </div>
+            )}
+            {mtab === 'settings' && <SettingsPanel />}
+          </main>
+
+          {/* 复用同一个 PlayerBar（它持有唯一的 <audio>），在手机上被压成迷你条 */}
+          <PlayerBar />
+
+          <nav className="m-tabbar">
+            <button className={mtab === 'library' ? 'active' : ''} onClick={() => setMtab('library')}>
+              <span className="ico">📁</span>
+              <span className="lbl">音乐库</span>
+            </button>
+            <button className={mtab === 'mine' ? 'active' : ''} onClick={() => setMtab('mine')}>
+              <span className="ico">❤️</span>
+              <span className="lbl">我的</span>
+            </button>
+            <button className={showNowPlaying ? 'active' : ''} onClick={() => setShowNowPlaying(true)}>
+              <span className="ico">🎴</span>
+              <span className="lbl">播放中</span>
+            </button>
+            <button className={mtab === 'settings' ? 'active' : ''} onClick={() => setMtab('settings')}>
+              <span className="ico">⚙️</span>
+              <span className="lbl">设置</span>
+            </button>
+          </nav>
+
+          {showNowPlaying && <NowPlaying />}
+        </div>
+        {toast && <div className="toast">{toast}</div>}
+      </>
+    )
+  }
 
   return (
     <>
