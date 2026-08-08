@@ -949,7 +949,7 @@ input.search {
   gap: 10px;
   height: 64px;
   padding: 8px 12px;
-  background: var(--panel);
+  background: var(--bg-2);
   border-top: 1px solid var(--line);
   flex-wrap: nowrap;
 }
@@ -973,7 +973,7 @@ input.search {
   z-index: 41;
   height: 56px;
   display: flex;
-  background: var(--panel);
+  background: var(--bg-2);
   border-top: 1px solid var(--line);
   padding-bottom: env(safe-area-inset-bottom, 0);
 }

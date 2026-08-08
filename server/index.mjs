@@ -17,6 +17,96 @@ import * as mm from 'music-metadata'
 import { getAccounts, getAccount, upsertAccount, deleteAccount, getKV, setKV } from './store.mjs'
 import { coverBytesFor } from './cover.mjs'
 
+// ---- 在线歌词（服务端代理抓取，绕开浏览器 CORS）----
+// 网易云优先，lrclib / lyrics.ovh 兜底；与前端 webMeta.ts 逻辑一致，但由服务器发起请求。
+async function srvFetchJson(url, timeout = 8000, headers) {
+  const ctrl = new AbortController()
+  const t = setTimeout(() => ctrl.abort(), timeout)
+  try {
+    const res = await fetch(url, {
+      headers: { 'User-Agent': 'OpMusicPlayer/1.0', Accept: 'application/json', ...(headers || {}) },
+      signal: ctrl.signal
+    })
+    if (!res.ok) return null
+    return await res.json()
+  } catch {
+    return null
+  } finally {
+    clearTimeout(t)
+  }
+}
+async function srvNeteaseLyrics(artist, title) {
+  const trySearch = async (q) => {
+    const s = await srvFetchJson(
+      `https://music.163.com/api/search/get?type=1&s=${encodeURIComponent(q)}&limit=10`,
+      8000,
+      { Referer: 'https://music.163.com/' }
+    )
+    const songs = s?.result?.songs || []
+    if (!songs.length) return null
+    const fetched = await Promise.all(
+      songs.slice(0, 8).map(async (song) => {
+        if (!song.id) return null
+        const l = await srvFetchJson(
+          `https://music.163.com/api/song/lyric?id=${song.id}&lv=-1&kv=-1&tv=-1`,
+          8000,
+          { Referer: 'https://music.163.com/' }
+        )
+        const lyric = l?.lrc?.lyric || l?.tlyric?.lyric || ''
+        if (!lyric.trim()) return null
+        const artistHit = artist
+          ? (song.artists || []).some((a) => a.name && (a.name === artist || a.name.includes(artist) || artist.includes(a.name)))
+          : true
+        return { lyric, len: lyric.length, artistHit }
+      })
+    )
+    const ok = fetched.filter(Boolean)
+    if (!ok.length) return null
+    ok.sort((a, b) => (b.artistHit ? 1 : 0) - (a.artistHit ? 1 : 0) || b.len - a.len)
+    return ok[0].lyric
+  }
+  if (artist) {
+    const r = await trySearch(`${artist} ${title}`)
+    if (r) return r
+  }
+  return trySearch(title)
+}
+const SRV_LYRIC_SOURCES = [
+  srvNeteaseLyrics,
+  async (artist, title) => {
+    const d = await srvFetchJson(`https://lrclib.net/api/search?artist=${encodeURIComponent(artist)}&track=${encodeURIComponent(title)}`)
+    const list = Array.isArray(d) ? d : []
+    const w = list.find((x) => x?.syncedLyrics) || list[0]
+    return w?.syncedLyrics || w?.plainLyrics || null
+  },
+  async (artist, title) => {
+    if (!artist) return null
+    const p = await srvFetchJson(`https://api.lyrics.ovh/v1/${encodeURIComponent(artist)}/${encodeURIComponent(title)}`)
+    return p?.lyrics || null
+  }
+]
+async function onlineLyricsServer(artist, title) {
+  if (!artist && !title) return null
+  const combos = artist ? [[artist, title], ['', title]] : [['', title]]
+  for (const [a, t] of combos) {
+    let settled = false
+    let result = null
+    await new Promise((resolve) => {
+      let remaining = SRV_LYRIC_SOURCES.length
+      SRV_LYRIC_SOURCES.forEach((src) =>
+        src(a, t)
+          .then((r) => {
+            if (!settled && r && r.trim()) { settled = true; result = r; resolve(r) }
+            else { remaining--; if (remaining === 0) resolve(null) }
+          })
+          .catch(() => { remaining--; if (remaining === 0) resolve(null) })
+      )
+    })
+    if (result) return result
+  }
+  return null
+}
+
 const PORT = parseInt(process.env.PORT || '8080', 10)
 const DIST = process.env.DIST_DIR || path.join(process.cwd(), 'dist')
 const TJ_USER = process.env.TJ_USER || ''
@@ -214,6 +304,13 @@ async function handleApi(req, res, url) {
     deleteAccount(id)
     clientCache.delete(id)
     return sendJson(res, 200, { ok: true })
+  }
+  // /api/lyrics-online —— 服务端代理获取在线歌词（绕开浏览器 CORS）
+  if (url.pathname === '/api/lyrics-online' && req.method === 'GET') {
+    const artist = url.searchParams.get('artist') || ''
+    const title = url.searchParams.get('title') || ''
+    const lrc = await onlineLyricsServer(artist, title)
+    return sendJson(res, 200, { lyrics: lrc || '' })
   }
   // /api/store —— 通用键值存储（歌单/收藏/设置 等用户数据，服务端持久化到 /data/store.json）
   if (url.pathname === '/api/store' && req.method === 'GET') {

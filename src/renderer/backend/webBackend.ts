@@ -274,6 +274,21 @@ export const webBackend: Backend = {
 
   lyrics: {
     online: async (artist, title): Promise<string | null> => {
+      // 服务端模式：由后端 /api/lyrics-online 代理抓取（绕开浏览器 CORS，否则在线歌词必失败）
+      if (SERVER) {
+        try {
+          const r = await fetch(
+            `/api/lyrics-online?artist=${encodeURIComponent(artist || '')}&title=${encodeURIComponent(title || '')}`
+          )
+          if (r.ok) {
+            const j = (await r.json()) as { lyrics?: string }
+            if (j?.lyrics) return j.lyrics
+          }
+        } catch {
+          /* 后端不可达，返回空 */
+        }
+        return null
+      }
       const cap = (window as any).Capacitor
       const plugin = cap?.Plugins?.OpMusic
       if (plugin?.onlineLyrics) {
