@@ -438,22 +438,37 @@ const server = http.createServer(async (req, res) => {
         const range = parseRange(req)
         res.setHeader('Accept-Ranges', 'bytes')
         res.setHeader('Content-Type', contentType(p))
-        if (range) {
-          const rHeader = `bytes=${range.start}-${range.end ?? ''}`
-          const r = await fetchBytes(client, p, rHeader)
-          const end = range.end ?? (r.contentLength ? range.start + r.contentLength - 1 : total - 1)
-          res.statusCode = r.status
-          if (r.contentRange) res.setHeader('Content-Range', r.contentRange)
-          else if (total) res.setHeader('Content-Range', `bytes ${range.start}-${end}/${total}`)
-          res.setHeader('Content-Length', String(r.contentLength ?? (total ? end - range.start + 1 : r.buf.length)))
-          return res.end(r.buf)
-        } else {
-          const r = await fetchBytes(client, p)
-          res.statusCode = r.status
-          if (r.contentLength) res.setHeader('Content-Length', String(r.contentLength))
-          else if (total) res.setHeader('Content-Length', String(total))
-          return res.end(r.buf)
+        // 流式转发：直接把 WebDAV 响应体 pipe 给浏览器，边下边播，支持 Range 续传
+        const rHeader = range ? `bytes=${range.start}-${range.end ?? ''}` : undefined
+        const resp = await client.customRequest(p, { method: 'GET', headers: rHeader ? { Range: rHeader } : {} })
+        const status = resp.status || (rHeader ? 206 : 200)
+        const cr = resp.headers?.get?.('content-range')
+        const cl = resp.headers?.get?.('content-length')
+        res.statusCode = status
+        if (status === 206) {
+          if (cr) res.setHeader('Content-Range', cr)
+          else if (total) {
+            const end = range && range.end != null ? range.end : total - 1
+            res.setHeader('Content-Range', `bytes ${range ? range.start : 0}-${end}/${total}`)
+          }
+          if (cl) res.setHeader('Content-Length', cl)
+          else if (total) {
+            const end = range && range.end != null ? range.end : total - 1
+            res.setHeader('Content-Length', String(end - (range ? range.start : 0) + 1))
+          }
+        } else if (cl) {
+          res.setHeader('Content-Length', cl)
+        } else if (total) {
+          res.setHeader('Content-Length', String(total))
         }
+        const upstream = resp.body
+        if (upstream && typeof upstream.pipe === 'function') {
+          upstream.on('error', () => { try { res.destroy() } catch {} })
+          res.on('close', () => { try { upstream.destroy() } catch {} })
+          return upstream.pipe(res)
+        }
+        // 兜底：极少数环境 body 非流，回退整读
+        try { return res.end(Buffer.from(await resp.arrayBuffer())) } catch { return res.end() }
       }
 
       if (url.pathname === '/cover') {
