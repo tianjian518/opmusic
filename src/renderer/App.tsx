@@ -10,6 +10,7 @@ import SettingsPanel from './components/SettingsPanel'
 import PlaylistPanel from './components/PlaylistPanel'
 import InfoPanel from './components/InfoPanel'
 import NowPlaying from './components/NowPlaying'
+import LyricTicker from './components/LyricTicker'
 
 type View = 'library' | 'favorites' | 'playlists'
 
@@ -98,6 +99,8 @@ export default function App() {
             )}
           </main>
 
+          {/* 手机版实时歌词滚动条：紧贴迷你播放条上方，常驻显示当前 2~3 行 */}
+          <LyricTicker />
           {/* 复用同一个 PlayerBar（它持有唯一的 <audio>），在手机上被压成迷你条 */}
           <PlayerBar />
 

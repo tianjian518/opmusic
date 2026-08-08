@@ -934,7 +934,7 @@ input.search {
   flex: 1 1 auto;
   overflow-y: auto;
   -webkit-overflow-scrolling: touch;
-  padding: 10px 12px calc(56px + 72px + 16px);
+  padding: 10px 12px calc(56px + 132px + 12px);
 }
 .app.mobile h3 { margin: 14px 4px 8px; }
 
@@ -965,6 +965,42 @@ input.search {
 .app.mobile .player .now-btn,
 .app.mobile .player .ghost,
 .app.mobile .player > button { display: none; }
+
+/* 手机版实时歌词滚动条：紧贴迷你播放条上方，常驻显示当前 2~3 行，随播放平滑上滚 */
+.app.mobile .m-lyric-ticker {
+  position: fixed;
+  left: 0; right: 0;
+  bottom: 120px;            /* 紧贴迷你条(64) + 底部 Tab(56) 之上 */
+  height: 66px;             /* 3 行 × 22px */
+  z-index: 39;
+  overflow: hidden;
+  cursor: pointer;
+  -webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 22px, #000 44px, transparent 100%);
+          mask-image: linear-gradient(to bottom, transparent 0, #000 22px, #000 44px, transparent 100%);
+  background: linear-gradient(to top, var(--bg-2) 60%, rgba(0,0,0,0));
+}
+.app.mobile .m-lyric-ticker .mlt-inner { will-change: transform; }
+.app.mobile .m-lyric-ticker .mlt-line {
+  height: 22px;
+  line-height: 22px;
+  text-align: center;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  padding: 0 18px;
+  font-size: 12px;
+  color: var(--text-2);
+  opacity: .4;
+  transition: opacity .3s, color .3s, transform .3s, font-size .3s;
+}
+.app.mobile .m-lyric-ticker .mlt-line.cur {
+  color: var(--text);
+  opacity: 1;
+  font-size: 15px;
+  font-weight: 600;
+  transform: scale(1.02);
+}
+.app.mobile .m-lyric-ticker .mlt-line.past { opacity: .3; }
 
 /* 底部 Tab 导航（QQ 音乐式） */
 .app.mobile .m-tabbar {
