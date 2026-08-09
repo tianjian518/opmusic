@@ -1039,6 +1039,38 @@ input.search {
 .app.mobile .crumbs { flex-wrap: wrap; margin: 6px 0 10px; }
 .app.mobile .file-item { padding: 12px 8px; }
 
+/* 手机端音量控制：桌面端用 .vol 滑块，这里用「🔊按钮 + 弹出滑块」避免挤占迷你条 */
+.app:not(.mobile) .player .vol-toggle,
+.app:not(.mobile) .player .vol-pop { display: none; }
+.app.mobile .player .vol-toggle {
+  font-size: 18px;
+  padding: 6px;
+  background: none;
+  border: none;
+  color: var(--text);
+  cursor: pointer;
+}
+.app.mobile .player .vol-pop {
+  position: fixed;
+  right: 12px;
+  bottom: 140px;
+  z-index: 45;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 8px 14px;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, .35);
+}
+.app.mobile .player .vol-pop input[type=range] { width: 130px; }
+
+/* 手机端「我的」歌单页：搜索框占满整行，工具栏自动换行，避免横向溢出 */
+.app.mobile .playlists-view .toolbar .search { width: 100% !important; }
+.app.mobile .playlists-view .toolbar .spacer { display: none; }
+.app.mobile .m-mine { padding-bottom: 8px; }
+
 /* 设置面板在手机上变为普通全宽可滚动块 */
 .app.mobile .panel,
 .app.mobile .panel.side-panel {

@@ -46,6 +46,7 @@ export default function PlayerBar() {
   const filtersRef = useRef<BiquadFilterNode[]>([])
   const durationRef = useRef<number | null>(null)
   const [cover, setCover] = useState('')
+  const [showVol, setShowVol] = useState(false)
 
   const cur = currentIndex >= 0 ? queue[currentIndex] : null
 
@@ -286,7 +287,23 @@ export default function PlayerBar() {
         <button className="primary" onClick={togglePlay}>{isPlaying ? '⏸' : '▶'}</button>
         <button onClick={next} title="下一首">⏭</button>
         <button onClick={cycleMode} title={`播放模式：${MODE_LABEL[settings.playMode] || '顺序播放'}（点击切换）`}>{MODE_ICON[settings.playMode]}</button>
+        <button className="vol-toggle" onClick={() => setShowVol((v) => !v)} title="音量">
+          {settings.volume === 0 ? '🔇' : '🔊'}
+        </button>
       </div>
+      {showVol && (
+        <div className="vol-pop" onClick={(e) => e.stopPropagation()}>
+          <span>🔈</span>
+          <input
+            type="range"
+            min={0}
+            max={1}
+            step={0.01}
+            value={settings.volume}
+            onChange={(e) => setVolume(parseFloat(e.target.value))}
+          />
+        </div>
+      )}
       <div className="progress">
         <span className="meta">{formatTime(currentTime)}</span>
         <input

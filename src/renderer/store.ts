@@ -223,11 +223,17 @@ export const useStore = create<State>((set, get) => ({
     // 缓存版本不符（解析逻辑变过）→ 丢弃旧 trackMeta，重新解析，避免旧错误结果留存
     const tmetaVer = await api.store.get('trackMetaVer')
     const tmeta = tmetaVer === TRACKMETA_VER ? (await api.store.get('trackMeta')) || {} : {}
+    // 恢复上次所在网盘与目录（仅当该账号仍存在），避免每次刷新都退回「账号管理」页，造成「数据没了」的错觉
+    const savedActive = await api.store.get('activeAccount')
+    const savedDir = await api.store.get('currentDir')
+    const activeAccount = accounts.some((a) => a.id === savedActive) ? savedActive : null
     set({
       settings: { ...defaultSettings, ...savedRaw },
       favorites: fav || [],
       playlists: pls || [],
-      trackMeta: tmeta
+      trackMeta: tmeta,
+      activeAccount,
+      currentDir: activeAccount ? savedDir || '/' : '/'
     })
   },
   addAccount: async (acc) => {
@@ -243,8 +249,13 @@ export const useStore = create<State>((set, get) => ({
     }
   },
   openDir: async (acct, dir) => {
-    const files = await api.files.list(acct, dir)
-    set({ activeAccount: acct, currentDir: dir, files, searchResults: null })
+    try {
+      const files = await api.files.list(acct, dir)
+      set({ activeAccount: acct, currentDir: dir, files, searchResults: null })
+    } catch (e: any) {
+      set({ files: [], searchResults: null })
+      get().setToast(`无法打开目录「${dir}」：${e?.message || '连接失败，请检查网盘地址/账号'}`)
+    }
   },
   playFile: async (file, acct) => {
     if (!isPlayable(file.name)) {
@@ -764,6 +775,8 @@ useStore.subscribe((state) => {
       api.store.set('settings', state.settings)
       api.store.set('trackMeta', state.trackMeta)
       api.store.set('trackMetaVer', TRACKMETA_VER)
+      api.store.set('activeAccount', state.activeAccount)
+      api.store.set('currentDir', state.currentDir)
     } catch {
       /* 忽略写入异常 */
     }

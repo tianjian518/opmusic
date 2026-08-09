@@ -6,6 +6,18 @@ import path from 'node:path'
 const DATA_DIR = process.env.DATA_DIR || path.join(process.cwd(), 'data')
 fs.mkdirSync(DATA_DIR, { recursive: true })
 
+// 启动自检：探测数据目录是否可写。若不可写（如未挂载持久卷），歌单/收藏/账号重启即丢失，
+// 这里给出明确告警，避免「数据没了」却无从排查。
+try {
+  const probe = path.join(DATA_DIR, '.write-test')
+  fs.writeFileSync(probe, 'ok')
+  fs.unlinkSync(probe)
+} catch (e) {
+  console.warn(
+    `[OpMusic] ⚠️ 数据目录不可写（${DATA_DIR}），歌单/收藏/设置重启后将丢失。请挂载持久化卷，例如 -v /你的目录:/data`
+  )
+}
+
 const ACCOUNTS_FILE = path.join(DATA_DIR, 'accounts.json')
 const METACACHE_FILE = path.join(DATA_DIR, 'metacache.json')
 
