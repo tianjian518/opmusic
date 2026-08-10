@@ -230,6 +230,22 @@ export const webBackend: Backend = {
 
   meta: {
     info: async (artist, album, _title?, _force?): Promise<TrackMetaInfo> => {
+      // 网页版：歌手简介主源是网易云，但它不带 CORS 头，浏览器直连拿不到 —— 必须走服务端代理。
+      // 代理没结果时再落到浏览器端（MusicBrainz / Wikipedia 支持 CORS）兜底。
+      if (SERVER) {
+        try {
+          const q = `artist=${encodeURIComponent(artist || '')}&album=${encodeURIComponent(
+            album || ''
+          )}&title=${encodeURIComponent(_title || '')}`
+          const r = await fetch(`/api/meta-info?${q}`)
+          if (r.ok) {
+            const j = (await r.json()) as TrackMetaInfo
+            if (j && (j.artistBio || j.albumName || j.albumYear)) return j
+          }
+        } catch {
+          /* 后端不可达，落到浏览器兜底 */
+        }
+      }
       const cap = (window as any).Capacitor
       const plugin = cap?.Plugins?.OpMusic
       if (plugin?.metaInfo) {
@@ -274,7 +290,8 @@ export const webBackend: Backend = {
 
   lyrics: {
     online: async (artist, title): Promise<string | null> => {
-      // 服务端模式：由后端 /api/lyrics-online 代理抓取（绕开浏览器 CORS，否则在线歌词必失败）
+      // 网易云不返回 CORS 头，浏览器直连必被拦，所以网页版先走服务端代理（服务器能直连网易云）；
+      // 代理没结果时再用浏览器端多源（lrclib / lyrics.ovh 支持 CORS）兜底，双保险。
       if (SERVER) {
         try {
           const r = await fetch(
@@ -282,12 +299,11 @@ export const webBackend: Backend = {
           )
           if (r.ok) {
             const j = (await r.json()) as { lyrics?: string }
-            if (j?.lyrics) return j.lyrics
+            if (j?.lyrics && j.lyrics.trim()) return j.lyrics
           }
         } catch {
-          /* 后端不可达，返回空 */
+          /* 后端不可达，落到浏览器兜底 */
         }
-        return null
       }
       const cap = (window as any).Capacitor
       const plugin = cap?.Plugins?.OpMusic

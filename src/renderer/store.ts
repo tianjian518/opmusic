@@ -81,6 +81,7 @@ interface State {
   activeAccount: string | null
   currentDir: string
   files: FileItem[]
+  loading: boolean
   queue: QueueTrack[]
   currentIndex: number
   isPlaying: boolean
@@ -149,7 +150,7 @@ interface State {
   moveTrackTo: (plId: string, path: string, targetId: string) => void
   setEq: (eq: number[]) => void
   fetchTrackInfo: (artist: string, album: string, title?: string, force?: boolean) => Promise<void>
-  fetchOnlineLyrics: () => Promise<void>
+  fetchOnlineLyrics: (silent?: boolean) => Promise<void>
   resolveMeta: (acct: string, path: string, force?: boolean) => Promise<{ artist?: string; album?: string; title?: string; year?: string; duration?: number }>
 }
 
@@ -185,6 +186,7 @@ export const useStore = create<State>((set, get) => ({
   activeAccount: null,
   currentDir: '',
   files: [],
+  loading: false,
   queue: [],
   currentIndex: -1,
   isPlaying: false,
@@ -249,11 +251,12 @@ export const useStore = create<State>((set, get) => ({
     }
   },
   openDir: async (acct, dir) => {
+    set({ loading: true, searchResults: null })
     try {
       const files = await api.files.list(acct, dir)
-      set({ activeAccount: acct, currentDir: dir, files, searchResults: null })
+      set({ activeAccount: acct, currentDir: dir, files, loading: false })
     } catch (e: any) {
-      set({ files: [], searchResults: null })
+      set({ files: [], loading: false })
       get().setToast(`无法打开目录「${dir}」：${e?.message || '连接失败，请检查网盘地址/账号'}`)
     }
   },
@@ -565,11 +568,16 @@ export const useStore = create<State>((set, get) => ({
   doSearch: async (kw) => {
     const { activeAccount, currentDir } = get()
     if (!activeAccount || !kw.trim()) {
-      set({ searchResults: null })
+      set({ searchResults: null, loading: false })
       return
     }
-    const res = await api.files.search(activeAccount, currentDir || '/', kw.trim())
-    set({ searchResults: res })
+    set({ loading: true })
+    try {
+      const res = await api.files.search(activeAccount, currentDir || '/', kw.trim())
+      set({ searchResults: res, loading: false })
+    } catch {
+      set({ searchResults: [], loading: false })
+    }
   },
   clearSearch: () => set({ searchResults: null }),
   loadLyrics: async (acct, path) => {

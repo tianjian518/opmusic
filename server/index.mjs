@@ -54,15 +54,22 @@ async function srvNeteaseLyrics(artist, title) {
         )
         const lyric = l?.lrc?.lyric || l?.tlyric?.lyric || ''
         if (!lyric.trim()) return null
+        const names = (song.artists || []).map((a) => a.name).filter(Boolean)
+        // 歌手精确一致 > 包含关系 > 不匹配，避免被同名翻唱顶掉原唱
+        const artistExact = artist ? names.some((n) => n === artist) : false
         const artistHit = artist
-          ? (song.artists || []).some((a) => a.name && (a.name === artist || a.name.includes(artist) || artist.includes(a.name)))
+          ? names.some((n) => n === artist || n.includes(artist) || artist.includes(n))
           : true
-        return { lyric, len: lyric.length, artistHit }
+        // 歌名也要相近，防止搜出完全不相干的同名歌
+        const sn = String(song.name || '')
+        const titleHit = title ? sn === title || sn.includes(title) || title.includes(sn) : true
+        return { lyric, len: lyric.length, artistExact, artistHit, titleHit }
       })
     )
     const ok = fetched.filter(Boolean)
     if (!ok.length) return null
-    ok.sort((a, b) => (b.artistHit ? 1 : 0) - (a.artistHit ? 1 : 0) || b.len - a.len)
+    const score = (x) => (x.artistExact ? 4 : 0) + (x.artistHit ? 2 : 0) + (x.titleHit ? 1 : 0)
+    ok.sort((a, b) => score(b) - score(a) || b.len - a.len)
     return ok[0].lyric
   }
   if (artist) {
@@ -105,6 +112,154 @@ async function onlineLyricsServer(artist, title) {
     if (result) return result
   }
   return null
+}
+
+// ---- 歌手信息 / 专辑信息（服务端代理抓取）----
+// 与压缩版 webMeta.ts 的 neteaseInfo + MusicBrainz/Wikipedia 兜底逻辑一致。
+// 必须放服务端：网易云 API 不返回 CORS 头，浏览器直连会被跨域拦截，歌手简介永远取不到。
+async function srvNeteaseInfo(artist, album, title) {
+  const result = {}
+  // 搜索词优先级：歌手+歌名 > 歌手+专辑 > 专辑 > 歌手 > 歌名
+  const queries = []
+  if (artist && title) queries.push(`${artist} ${title}`)
+  if (artist && album) queries.push(`${artist} ${album}`)
+  if (album) queries.push(album)
+  if (artist) queries.push(artist)
+  if (title) queries.push(title)
+  if (!queries.length) return result
+
+  let pick = null
+  for (const q of queries) {
+    const s = await srvFetchJson(
+      `https://music.163.com/api/search/get?type=1&s=${encodeURIComponent(q)}&limit=10`,
+      8000,
+      { Referer: 'https://music.163.com/' }
+    )
+    const songs = s?.result?.songs || []
+    if (!songs.length) continue
+    const titleNear = (sg) => !title || sg.name.includes(title) || title.includes(sg.name)
+    const artistHit = (sg) =>
+      artist ? (sg.artists || []).some((a) => a.name && (a.name === artist || a.name.includes(artist) || artist.includes(a.name))) : true
+    pick =
+      songs.find((sg) => artist && (sg.artists || []).some((a) => a.name === artist) && titleNear(sg)) ||
+      songs.find((sg) => artistHit(sg) && titleNear(sg)) ||
+      songs.find((sg) => artistHit(sg)) ||
+      songs[0]
+    if (pick) break
+  }
+  if (!pick) return result
+
+  const a0 = (pick.artists || [])[0]
+  if (a0?.id) {
+    const det = await srvFetchJson(`https://music.163.com/api/artist/introduction?id=${a0.id}`, 8000, {
+      Referer: 'https://music.163.com/'
+    })
+    const brief = det?.briefDesc || ''
+    const intro = (det?.introduction || [])
+      .map((x) => `${x.ti || ''}\n${x.txt || ''}`)
+      .filter((t) => t.trim())
+      .join('\n\n')
+    const bio = (brief + (intro ? '\n\n' + intro : '')).trim()
+    if (bio) result.artistBio = bio
+  }
+  // 专辑名优先用调用方传入的；网易云搜索翻唱多，仅当歌手精确一致时才采用其专辑
+  if (album) result.albumName = album
+  else if (pick.album?.name && a0 && a0.name === artist) result.albumName = pick.album.name
+  if (!result.albumYear && pick.album?.publishTime && a0 && a0.name === artist) {
+    const d = new Date(pick.album.publishTime)
+    if (!isNaN(d.getTime())) result.albumYear = String(d.getFullYear())
+  }
+  if (pick.album?.id) {
+    const al = await srvFetchJson(`https://music.163.com/api/album/${pick.album.id}`, 8000, {
+      Referer: 'https://music.163.com/'
+    })
+    if (al?.album) {
+      if (!result.albumName && al.album.name) result.albumName = al.album.name
+      if (!result.albumYear && al.album.publishTime) {
+        const d = new Date(al.album.publishTime)
+        if (!isNaN(d.getTime())) result.albumYear = String(d.getFullYear())
+      }
+    }
+  }
+  return result
+}
+
+const SRV_MB = 'https://musicbrainz.org/ws/2'
+async function srvInfoMusicBrainz(artist, album) {
+  const result = {}
+  if (artist) {
+    const a = await srvFetchJson(`${SRV_MB}/artist/?query=${encodeURIComponent('artist:' + artist)}&fmt=json&limit=1`)
+    const mbArtist = a?.artists?.[0]
+    if (mbArtist) {
+      const det = await srvFetchJson(`${SRV_MB}/artist/${mbArtist.id}?inc=url-rels&fmt=json`)
+      const wiki = (det?.relations || []).find((r) => r.type === 'wikipedia')
+      const wikiTitle = wiki?.url?.resource?.split('/wiki/')[1]
+      if (wikiTitle) {
+        const t = decodeURIComponent(wikiTitle)
+        let sum = await srvFetchJson(`https://zh.wikipedia.org/api/rest_v1/page/summary/${encodeURIComponent(t)}`)
+        if (!sum?.extract) sum = await srvFetchJson(`https://en.wikipedia.org/api/rest_v1/page/summary/${encodeURIComponent(t)}`)
+        if (sum?.extract) result.artistBio = sum.extract
+      }
+    }
+  }
+  if (album) {
+    const queries = []
+    if (artist) queries.push(`release:${album} AND artist:${artist}`)
+    queries.push(`release:${album}`)
+    for (const q of queries) {
+      const d = await srvFetchJson(`${SRV_MB}/release/?query=${encodeURIComponent(q)}&fmt=json&limit=1`)
+      const rel = d?.releases?.[0]
+      if (rel) {
+        result.albumName = rel.title
+        result.albumYear = rel.date ? String(rel.date).slice(0, 4) : undefined
+        break
+      }
+    }
+  }
+  return result
+}
+
+// 歌手直搜兜底：网易云歌曲搜索翻唱版本很多，选中的第一首常常不是本人（如「周杰伦 晴天」），
+// 导致取不到简介。此时直接用歌手搜索(type=100)拿本人 id，再取简介，命中率明显更高。
+async function srvNeteaseArtistBio(artist) {
+  if (!artist) return ''
+  const s = await srvFetchJson(
+    `https://music.163.com/api/search/get?type=100&s=${encodeURIComponent(artist)}&limit=10`,
+    8000,
+    { Referer: 'https://music.163.com/' }
+  )
+  const list = s?.result?.artists || []
+  if (!list.length) return ''
+  const a0 =
+    list.find((a) => a.name === artist) ||
+    list.find((a) => a.name && (a.name.includes(artist) || artist.includes(a.name))) ||
+    list[0]
+  if (!a0?.id) return ''
+  const det = await srvFetchJson(`https://music.163.com/api/artist/introduction?id=${a0.id}`, 8000, {
+    Referer: 'https://music.163.com/'
+  })
+  const brief = det?.briefDesc || ''
+  const intro = (det?.introduction || [])
+    .map((x) => `${x.ti || ''}\n${x.txt || ''}`)
+    .filter((t) => t.trim())
+    .join('\n\n')
+  return (brief + (intro ? '\n\n' + intro : '')).trim()
+}
+
+async function metaInfoServer(artist, album, title) {
+  const ne = await srvNeteaseInfo(artist || '', album || '', title || '')
+  // 简介缺失时用歌手直搜补齐（专辑等其它字段保留）
+  if (!ne.artistBio && artist) {
+    try {
+      const bio = await srvNeteaseArtistBio(artist)
+      if (bio) ne.artistBio = bio
+    } catch {
+      /* 忽略，继续兜底 */
+    }
+  }
+  if (ne.artistBio || ne.albumName || ne.albumYear) return ne
+  if (artist || album) return srvInfoMusicBrainz(artist || '', album || '')
+  return {}
 }
 
 const PORT = parseInt(process.env.PORT || '8080', 10)
@@ -311,6 +466,18 @@ async function handleApi(req, res, url) {
     const title = url.searchParams.get('title') || ''
     const lrc = await onlineLyricsServer(artist, title)
     return sendJson(res, 200, { lyrics: lrc || '' })
+  }
+  // /api/meta-info —— 服务端代理获取歌手简介 / 专辑信息（网易云无 CORS 头，必须服务端抓）
+  if (url.pathname === '/api/meta-info' && req.method === 'GET') {
+    const artist = url.searchParams.get('artist') || ''
+    const album = url.searchParams.get('album') || ''
+    const title = url.searchParams.get('title') || ''
+    try {
+      const info = await metaInfoServer(artist, album, title)
+      return sendJson(res, 200, info || {})
+    } catch (e) {
+      return sendJson(res, 200, {})
+    }
   }
   // /api/store —— 通用键值存储（歌单/收藏/设置 等用户数据，服务端持久化到 /data/store.json）
   if (url.pathname === '/api/store' && req.method === 'GET') {
