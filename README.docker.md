@@ -74,3 +74,27 @@ npm install
 npm run build:server      # 产出 dist/
 node server/index.mjs     # 启动后端，默认 8080
 ```
+
+---
+
+## 手机使用（安卓推荐）
+
+手机端已针对触摸屏重做为 App 形态：底部 Tab 栏 + 常驻迷你播放条，
+点歌直接进全屏播放页，**左右滑动封面切歌、下滑收起、歌词全屏展示**。
+
+1. 手机浏览器打开你的服务地址（如 `http://你的IP:8080`）
+2. 浏览器菜单选「**添加到主屏幕**」，即可以独立窗口打开（无地址栏，等同 App）
+3. 桌面图标已配好，安卓可正常安装
+
+> ⚠️ 手机访问时 **WebDAV 地址必须用手机能连通的地址**（公网域名 / NAS 内网 IP），
+> 不能用 `127.0.0.1`——那样只有服务器自己能访问。
+
+### 国内构建（加速）
+
+默认走官方源，国内可指定镜像源：
+
+```bash
+docker build --build-arg NPM_REGISTRY=https://registry.npmmirror.com \
+             --build-arg APT_MIRROR=mirrors.aliyun.com \
+             -t tianjian-music .
+```
