@@ -31,16 +31,31 @@ exec /opt/$APP_ID/webdav-music-player "\$@"
 EOF
 chmod 755 "$STAGE/usr/bin/$APP_ID"
 
+# 应用图标 -> /usr/share/icons/hicolor/<尺寸>/apps/
+# 系统菜单按图标名查找，必须放到 hicolor 主题目录下，否则开始菜单图标是空的。
+for SZ in 512 192 32; do
+  SRC_ICON="$ROOT/public/icon-$SZ.png"
+  [ -f "$SRC_ICON" ] || SRC_ICON="$ROOT/public/icon.svg"
+  if [ -f "$SRC_ICON" ]; then
+    mkdir -p "$STAGE/usr/share/icons/hicolor/${SZ}x${SZ}/apps"
+    cp -a "$SRC_ICON" "$STAGE/usr/share/icons/hicolor/${SZ}x${SZ}/apps/$APP_ID.png"
+  fi
+done
+
 # 桌面入口
 mkdir -p "$STAGE/usr/share/applications"
 cat > "$STAGE/usr/share/applications/$APP_ID.desktop" <<EOF
 [Desktop Entry]
 Name=$APP_NAME
+Name[zh_CN]=$APP_NAME
 Comment=支持 WebDAV 的本地音乐播放器
+Comment[zh_CN]=支持 WebDAV 的本地音乐播放器
 Exec=$APP_ID
+Icon=$APP_ID
 Terminal=false
 Type=Application
-Categories=Audio;Music;
+Categories=Audio;Music;Player;
+StartupNotify=true
 StartupWMClass=webdav-music-player
 EOF
 
