@@ -1,6 +1,10 @@
 import http from 'node:http'
+import fs from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
+import crypto from 'node:crypto'
 import { spawn, execFileSync } from 'node:child_process'
-import { getClient, getAccount, isAudio } from './webdav'
+import { getClient, getAccount } from './webdav'
 import { coverBytesFor } from './meta'
 import { FFMPEG_BIN } from './ffmpeg'
 
@@ -13,58 +17,234 @@ try {
   FFMPEG_OK = false
 }
 
-// 把 WebDAV 上的音频整文件读入内存（转码需完整输入）
-async function fetchFull(client: any, path: string): Promise<Buffer> {
-  const resp: any = await client.customRequest(path, { method: 'GET' })
-  return Buffer.from(await resp.arrayBuffer())
+// ===========================================================================
+// 1) 转码缓存：APE/WMA 转好的 MP3 落盘，第二次听直接秒开（且能拖进度）
+// ===========================================================================
+const CACHE_DIR = path.join(os.tmpdir(), 'tianjian-music-cache')
+try {
+  fs.mkdirSync(CACHE_DIR, { recursive: true })
+} catch {
+  /* ignore */
+}
+const CACHE_MAX_BYTES = 2 * 1024 * 1024 * 1024 // 2GB 上限
+
+function cachePathFor(acct: string, filePath: string): string {
+  const h = crypto.createHash('sha1').update(acct + '|' + filePath).digest('hex')
+  return path.join(CACHE_DIR, h + '.mp3')
+}
+function pruneCache() {
+  try {
+    const files = fs
+      .readdirSync(CACHE_DIR)
+      .map((n) => {
+        const p = path.join(CACHE_DIR, n)
+        try {
+          const st = fs.statSync(p)
+          return { p, size: st.size, mtime: st.mtimeMs }
+        } catch {
+          return null
+        }
+      })
+      .filter(Boolean) as { p: string; size: number; mtime: number }[]
+    let total = files.reduce((s, f) => s + f.size, 0)
+    if (total <= CACHE_MAX_BYTES) return
+    files.sort((a, b) => a.mtime - b.mtime)
+    for (const f of files) {
+      if (total <= CACHE_MAX_BYTES) break
+      try {
+        fs.unlinkSync(f.p)
+        total -= f.size
+      } catch {
+        /* ignore */
+      }
+    }
+  } catch {
+    /* ignore */
+  }
 }
 
-// 用 ffmpeg 把（内存中的）音频转码为 MP3，流式输出到 HTTP 响应。
-// 浏览器原生不支持的 WMA / APE 借此变成可播放的 MP3；不支持 Range（整段播放，无法精确拖动）。
-function transcodeToMp3(input: Buffer, req: http.IncomingMessage, res: http.ServerResponse) {
-  const ffmpeg = spawn(FFMPEG_BIN, [
+// ===========================================================================
+// 2) 关键修复：WebDAV 返回 302 跳转时，必须跟随到网盘 CDN 才能拿到真数据。
+//    webdav 库的 customRequest 不跟跳转，会把 721 字节的 302 响应体当音频，
+//    这就是"MP3 也要十几秒才出声"的根因。
+//    这里改用原生 fetch + 手动跟随 + Range 透传，实现真正的边下边播。
+// ===========================================================================
+interface Upstream {
+  status: number
+  headers: Headers
+  body: ReadableStream<Uint8Array> | null
+}
+
+const encPath = (p: string) =>
+  p
+    .split('/')
+    .map((s) => encodeURIComponent(s))
+    .join('/')
+
+async function openUpstream(
+  accountId: string,
+  filePath: string,
+  rangeHeader?: string
+): Promise<Upstream> {
+  const acc = getAccount(accountId)
+  if (!acc) throw new Error('账号不存在: ' + accountId)
+  const origin = acc.url.replace(/\/+$/, '')
+  const auth =
+    acc.username != null
+      ? 'Basic ' + Buffer.from(`${acc.username}:${acc.password ?? ''}`).toString('base64')
+      : null
+
+  let url = origin + encPath(filePath)
+  const headers: Record<string, string> = {}
+  if (auth) headers['Authorization'] = auth
+  if (rangeHeader) headers['Range'] = rangeHeader
+
+  for (let hop = 0; hop < 6; hop++) {
+    const resp = await fetch(url, { headers, redirect: 'manual' })
+    if (resp.status >= 300 && resp.status < 400) {
+      const loc = resp.headers.get('location')
+      if (!loc) return { status: resp.status, headers: resp.headers, body: resp.body }
+      url = new URL(loc, url).toString()
+      // 跳到 CDN 后去掉 Basic 鉴权（CDN 用签名 URL；多余的头可能被拒或触发 400）
+      delete headers['Authorization']
+      continue
+    }
+    return { status: resp.status, headers: resp.headers, body: resp.body }
+  }
+  throw new Error('too many redirects')
+}
+
+// 把上游（已跟随跳转的）响应原样转发给客户端，流式、不整读内存
+async function pipeToRes(up: Upstream, res: http.ServerResponse, fallbackType: string) {
+  res.statusCode = up.status
+  const ct = up.headers.get('content-type')
+  res.setHeader(
+    'Content-Type',
+    ct && !/octet-stream/i.test(ct) ? ct : fallbackType
+  )
+  const cr = up.headers.get('content-range')
+  const cl = up.headers.get('content-length')
+  if (cr) res.setHeader('Content-Range', cr)
+  if (cl) res.setHeader('Content-Length', cl)
+  res.setHeader('Accept-Ranges', up.headers.get('accept-ranges') || 'bytes')
+  if (!up.body) return res.end()
+  const reader = up.body.getReader()
+  try {
+    for (;;) {
+      const { done, value } = await reader.read()
+      if (done) break
+      if (!res.write(Buffer.from(value))) {
+        await new Promise((ok) => res.once('drain', ok))
+      }
+    }
+  } catch {
+    /* 客户端断开 */
+  }
+  try {
+    res.end()
+  } catch {
+    /* ignore */
+  }
+}
+
+// ===========================================================================
+// 3) 流式转码：上游边下 → ffmpeg 边转 → 客户端边收（首字节从"整首下完"变成"立刻出声"）
+//    同时把转码结果写入磁盘缓存（tee），下次直接命中。
+// ===========================================================================
+function streamTranscode(
+  up: Upstream,
+  req: http.IncomingMessage,
+  res: http.ServerResponse,
+  cacheFile: string | null
+) {
+  const ff = spawn(FFMPEG_BIN, [
     '-i', 'pipe:0',
+    '-vn',
     '-f', 'mp3',
-    '-ab', '320k',
+    '-ab', '192k',
     '-map', '0:a:0',
     '-y',
     'pipe:1'
   ])
-  // 吞掉 stdin 的 EPIPE（客户端断开/ffmpeg 异常退出后继续写缓冲会触发），避免未捕获异常崩溃主进程
-  ffmpeg.stdin.on('error', () => {
-    /* ignore */
-  })
-  // 客户端提前断开时 res 可能已关闭，pipe 写入会抛错，忽略之
-  res.on('error', () => {
-    /* ignore */
-  })
-  ffmpeg.stdin.write(input)
-  ffmpeg.stdin.end()
-  ffmpeg.stdout.pipe(res)
-  ffmpeg.stderr.on('data', () => {
-    /* 丢弃 ffmpeg 日志 */
-  })
-  ffmpeg.on('error', () => {
+  ff.stdin.on('error', () => {})
+  ff.stdout.on('error', () => {})
+  res.on('error', () => {})
+
+  const tmp = cacheFile ? cacheFile + '.part' : null
+  let out: fs.WriteStream | null = null
+  if (tmp) {
     try {
-      res.statusCode = 500
-      res.end('transcode failed')
+      out = fs.createWriteStream(tmp)
+      out.on('error', () => {})
+    } catch {
+      out = null
+    }
+  }
+
+  let bytesOut = 0
+  ff.stdout.on('data', (chunk: Buffer) => {
+    bytesOut += chunk.length
+    res.write(chunk)
+    if (out) out.write(chunk)
+  })
+
+  // 上游 → ffmpeg stdin
+  ;(async () => {
+    if (!up.body) return ff.stdin.end()
+    const reader = up.body.getReader()
+    try {
+      for (;;) {
+        const { done, value } = await reader.read()
+        if (done) break
+        if (!ff.stdin.write(Buffer.from(value))) {
+          await new Promise((ok) => ff.stdin.once('drain', ok))
+        }
+      }
+    } catch {
+      /* 上游中断 */
+    }
+    try {
+      ff.stdin.end()
     } catch {
       /* ignore */
     }
-  })
-  ffmpeg.on('close', () => {
+  })()
+
+  ff.stderr.on('data', () => {})
+  ff.on('error', () => {
     try {
-      if (!res.writableEnded) res.end()
-    } catch {
-      /* ignore */
+      res.end()
+    } catch {}
+  })
+  ff.on('close', (code) => {
+    try {
+      res.end()
+    } catch {}
+    // 只有正常转完且真的产出了数据，才把 .part 提升为正式缓存
+    if (out) {
+      out.end(() => {
+        try {
+          if (code === 0 && bytesOut > 0) {
+            fs.renameSync(tmp!, cacheFile!)
+            pruneCache()
+          } else {
+            fs.unlinkSync(tmp!)
+          }
+        } catch {
+          /* ignore */
+        }
+      })
     }
   })
-  // 客户端切歌/关闭 → 终止转码进程，避免空转
   req.on('close', () => {
     try {
-      ffmpeg.kill('SIGKILL')
-    } catch {
-      /* ignore */
+      ff.kill('SIGKILL')
+    } catch {}
+    if (out) {
+      try {
+        out.end()
+        fs.unlinkSync(tmp!)
+      } catch {}
     }
   })
 }
@@ -94,49 +274,7 @@ function parseRange(req: http.IncomingMessage): { start: number; end?: number } 
   if (!h) return null
   const m = /bytes=(\d+)-(\d*)/.exec(h)
   if (!m) return null
-  const start = parseInt(m[1], 10)
-  const end = m[2] ? parseInt(m[2], 10) : undefined
-  return { start, end }
-}
-
-// webdav v5 无 getFileInfo，改用目录列表取文件大小（仅用于兜底 Content-Length）
-async function getFileSize(client: any, path: string): Promise<number> {
-  const idx = path.lastIndexOf('/')
-  const parent = idx <= 0 ? '/' : path.slice(0, idx)
-  const base = path.slice(idx + 1)
-  try {
-    const listing = await client.getDirectoryContents(parent)
-    const arr = Array.isArray(listing) ? listing : (listing as any).data || []
-    const item = (arr as any[]).find((i) => i.basename === base)
-    return item?.size || 0
-  } catch {
-    return 0
-  }
-}
-
-// webdav v5 没有 getFileStream；用 customRequest 发送带 Range 的 GET，
-// 由 webdav 内部处理鉴权并把分片整体返回在 resp 中（resp.arrayBuffer()）。
-async function fetchBytes(client: any, path: string, rangeHeader?: string): Promise<{
-  status: number
-  contentType: string
-  contentRange?: string
-  contentLength?: number
-  buf: Buffer
-}> {
-  const resp: any = await client.customRequest(path, {
-    method: 'GET',
-    headers: rangeHeader ? { Range: rangeHeader } : {}
-  })
-  const buf = Buffer.from(await resp.arrayBuffer())
-  const cr = resp.headers?.get?.('content-range')
-  const cl = resp.headers?.get?.('content-length')
-  return {
-    status: resp.status || (rangeHeader ? 206 : 200),
-    contentType: contentType(path),
-    contentRange: cr || undefined,
-    contentLength: cl ? parseInt(cl, 10) : undefined,
-    buf
-  }
+  return { start: parseInt(m[1], 10), end: m[2] ? parseInt(m[2], 10) : undefined }
 }
 
 export function startStreamServer(): Promise<{ port: number; base: string }> {
@@ -145,64 +283,77 @@ export function startStreamServer(): Promise<{ port: number; base: string }> {
       try {
         const url = new URL(req.url || '', 'http://localhost')
         const acct = url.searchParams.get('acct') || ''
-        const path = decodeURIComponent(url.searchParams.get('path') || '')
-        const client: any = getClient(acct)
+        const filePath = decodeURIComponent(url.searchParams.get('path') || '')
+
         if (url.pathname === '/stream') {
-          // 浏览器原生不支持的格式（WMA / APE）：若本机有 ffmpeg，实时转码为 MP3 再输出
-          const wantTranscode = url.searchParams.get('transcode') === '1' || /\.(wma|ape)$/i.test(path)
+          const wantTranscode =
+            url.searchParams.get('transcode') === '1' || /\.(wma|ape)$/i.test(filePath)
+
           if (wantTranscode) {
             if (!FFMPEG_OK) {
               res.statusCode = 415
-              res.end('本机未检测到 ffmpeg，无法转码 WMA / APE；请安装 ffmpeg 或转换为 MP3 / FLAC 后播放')
+              res.end('本机未检测到 ffmpeg，无法转码 WMA / APE')
               return
             }
-            try {
-              const buf = await fetchFull(client, path)
-              res.setHeader('Content-Type', 'audio/mpeg')
-              res.setHeader('Accept-Ranges', 'none')
-              transcodeToMp3(buf, req, res)
-              return
-            } catch (e: any) {
-              res.statusCode = 500
-              res.end('transcode error: ' + (e?.message || e))
-              return
+            const cacheFile = cachePathFor(acct, filePath)
+
+            // —— 缓存命中：直接当 MP3 走 Range，秒开 + 可拖进度 ——
+            if (fs.existsSync(cacheFile)) {
+              try {
+                const st = fs.statSync(cacheFile)
+                res.setHeader('Content-Type', 'audio/mpeg')
+                res.setHeader('Accept-Ranges', 'bytes')
+                const rg = parseRange(req)
+                if (rg) {
+                  const end = rg.end ?? st.size - 1
+                  if (rg.start >= st.size) {
+                    res.statusCode = 416
+                    res.setHeader('Content-Range', `bytes */${st.size}`)
+                    return res.end()
+                  }
+                  res.statusCode = 206
+                  res.setHeader('Content-Range', `bytes ${rg.start}-${end}/${st.size}`)
+                  res.setHeader('Content-Length', String(end - rg.start + 1))
+                  return fs.createReadStream(cacheFile, { start: rg.start, end }).pipe(res)
+                }
+                res.statusCode = 200
+                res.setHeader('Content-Length', String(st.size))
+                return fs.createReadStream(cacheFile).pipe(res)
+              } catch {
+                /* 缓存损坏 → 落到实时转码 */
+              }
             }
+
+            // —— 未命中：流式转码，边转边播边存 ——
+            const up = await openUpstream(acct, filePath)
+            if (up.status >= 400) {
+              res.statusCode = up.status
+              return res.end('upstream error ' + up.status)
+            }
+            res.setHeader('Content-Type', 'audio/mpeg')
+            res.setHeader('Accept-Ranges', 'none')
+            return streamTranscode(up, req, res, cacheFile)
           }
-          const total = await getFileSize(client, path)
-          const range = parseRange(req)
-          res.setHeader('Accept-Ranges', 'bytes')
-          res.setHeader('Content-Type', contentType(path))
-          if (range) {
-            const rHeader = `bytes=${range.start}-${range.end ?? ''}`
-            const r = await fetchBytes(client, path, rHeader)
-            const end = range.end ?? (r.contentLength ? range.start + r.contentLength - 1 : total - 1)
-            res.statusCode = r.status
-            if (r.contentRange) res.setHeader('Content-Range', r.contentRange)
-            else if (total) res.setHeader('Content-Range', `bytes ${range.start}-${end}/${total}`)
-            res.setHeader('Content-Length', String(r.contentLength ?? (total ? end - range.start + 1 : r.buf.length)))
-            return res.end(r.buf)
-          } else {
-            const r = await fetchBytes(client, path)
-            res.statusCode = r.status
-            if (r.contentLength) res.setHeader('Content-Length', String(r.contentLength))
-            else if (total) res.setHeader('Content-Length', String(total))
-            return res.end(r.buf)
+
+          // —— 原生可播：跟随 302，Range 透传，边下边播 ——
+          const up = await openUpstream(acct, filePath, req.headers.range)
+          if (up.status >= 400) {
+            res.statusCode = up.status
+            return res.end('upstream error ' + up.status)
           }
+          return pipeToRes(up, res, contentType(filePath))
         } else if (url.pathname === '/cover') {
-          const dir = path.endsWith('/') ? path : path + '/'
+          const dir = filePath.endsWith('/') ? filePath : filePath + '/'
           const cands = ['folder.jpg', 'cover.jpg', 'album.jpg', 'Album.jpg', 'folder.png', 'cover.png']
           for (const c of cands) {
             try {
-              const r = await fetchBytes(client, dir + c)
-              res.setHeader('Content-Type', contentType(c))
-              if (r.contentLength) res.setHeader('Content-Length', String(r.contentLength))
-              res.statusCode = 200
-              return res.end(r.buf)
+              const up = await openUpstream(acct, dir + c)
+              if (up.status >= 400) continue
+              return pipeToRes(up, res, contentType(c))
             } catch {
               /* try next */
             }
           }
-          // 本地没有封面 → 按歌手/专辑/歌名在线刮削兜底
           const artist = url.searchParams.get('artist') || ''
           const album = url.searchParams.get('album') || ''
           const title = url.searchParams.get('title') || ''
@@ -221,9 +372,11 @@ export function startStreamServer(): Promise<{ port: number; base: string }> {
           res.statusCode = 404
           res.end('no cover')
         } else if (url.pathname === '/lyrics') {
-          const lrc = path.replace(/\.[^.]+$/, '.lrc')
+          const lrc = filePath.replace(/\.[^.]+$/, '.lrc')
           try {
-            const text = (await client.getFileContents(lrc, { format: 'text' })) as string
+            const up = await openUpstream(acct, lrc)
+            if (up.status >= 400) throw new Error('404')
+            const text = await new Response(up.body).text()
             res.setHeader('Content-Type', 'text/plain; charset=utf-8')
             res.end(text || '')
           } catch {
@@ -235,8 +388,12 @@ export function startStreamServer(): Promise<{ port: number; base: string }> {
           res.end('not found')
         }
       } catch (e: any) {
-        res.statusCode = 500
-        res.end('error: ' + e?.message)
+        try {
+          if (!res.headersSent) res.statusCode = 500
+          res.end('error: ' + (e?.message || e))
+        } catch {
+          /* ignore */
+        }
       }
     })
     server.listen(0, '127.0.0.1', () => {

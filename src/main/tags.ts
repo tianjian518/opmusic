@@ -1,7 +1,58 @@
-import { getClient } from './webdav'
+import { getClient, getAccount } from './webdav'
 import * as mm from 'music-metadata'
 import { spawn } from 'node:child_process'
 import { FFPROBE_BIN } from './ffmpeg'
+
+// ---------------------------------------------------------------------------
+// 取「文件头部若干字节」而非整个文件。
+// 旧实现用 client.customRequest 整读：① 不跟随 OpenList→网盘 CDN 的 302，拿到的
+// 是 721 字节跳转页；② 即便能读，一首 30MB 的 ape 要下 11 秒才拿到标签。
+// 标签/时长绝大多数都能从文件头部读出，所以这里 Range 取头部即可，快几十倍。
+// ---------------------------------------------------------------------------
+async function fetchHead(accountId: string, filePath: string, bytes = 1024 * 1024): Promise<Buffer | null> {
+  const acc = getAccount(accountId)
+  if (!acc) return null
+  const origin = acc.url.replace(/\/+$/, '')
+  const url0 =
+    origin +
+    filePath
+      .split('/')
+      .map((s) => encodeURIComponent(s))
+      .join('/')
+  const headers: Record<string, string> = { Range: `bytes=0-${bytes - 1}` }
+  if (acc.username != null) {
+    headers['Authorization'] = 'Basic ' + Buffer.from(`${acc.username}:${acc.password ?? ''}`).toString('base64')
+  }
+  let url = url0
+  try {
+    for (let hop = 0; hop < 6; hop++) {
+      const resp = await fetch(url, { headers, redirect: 'manual' })
+      if (resp.status >= 300 && resp.status < 400) {
+        const loc = resp.headers.get('location')
+        if (!loc) break
+        url = new URL(loc, url).toString()
+        delete headers['Authorization'] // 跳到 CDN 后不再带 Basic
+        continue
+      }
+      if (resp.status >= 400) return null
+      return Buffer.from(await resp.arrayBuffer())
+    }
+  } catch {
+    return null
+  }
+  return null
+}
+
+// 整读兜底（头部信息不足时使用，尽量少走）
+async function fetchWhole(accountId: string, filePath: string): Promise<Buffer | null> {
+  try {
+    const client: any = getClient(accountId)
+    const resp: any = await client.customRequest(filePath, { method: 'GET' })
+    return Buffer.from(await resp.arrayBuffer())
+  } catch {
+    return null
+  }
+}
 
 export interface TrackTags {
   artist?: string
@@ -83,26 +134,37 @@ async function extractTags(buf: Buffer, filename: string): Promise<TrackTags | n
 }
 
 export async function getTrackTags(accountId: string, filePath: string): Promise<TrackTags | null> {
-  const client: any = getClient(accountId)
-  let buf: Buffer
-  try {
-    const resp: any = await client.customRequest(filePath, { method: 'GET' })
-    buf = Buffer.from(await resp.arrayBuffer())
-  } catch {
-    return null
+  // 先只取头部 1MB —— 标签几乎都在文件头，避免为读标签下载整首 30MB
+  let buf = await fetchHead(accountId, filePath, 1024 * 1024)
+  if (buf && buf.length) {
+    try {
+      const t = await ffprobeTags(buf)
+      // 头部只够读到标签、读不到时长也没关系；关键字段齐了就直接用
+      if (t && (t.artist || t.album || t.title || t.year)) return t
+    } catch {
+      /* ignore */
+    }
+    try {
+      const t = await extractTags(buf, filePath)
+      if (t && (t.artist || t.album || t.title || t.year || t.duration !== undefined)) return t
+    } catch {
+      /* ignore */
+    }
   }
-  // 主路径：ffprobe（通吃 WMA/APE/MP3/FLAC，能正确读 title/year）
-  try {
-    const t = await ffprobeTags(buf)
-    if (t && (t.artist || t.album || t.title || t.year || t.duration)) return t
-  } catch {
-    /* ignore */
-  }
-  // 兜底：music-metadata
-  try {
-    return extractTags(buf, filePath)
-  } catch {
-    /* ignore */
+  // 头部信息不足（少见）→ 整读兜底
+  const whole = await fetchWhole(accountId, filePath)
+  if (whole) {
+    try {
+      const t = await ffprobeTags(whole)
+      if (t && (t.artist || t.album || t.title || t.year || t.duration)) return t
+    } catch {
+      /* ignore */
+    }
+    try {
+      return extractTags(whole, filePath)
+    } catch {
+      /* ignore */
+    }
   }
   return null
 }
@@ -134,25 +196,37 @@ function ffprobeDuration(buf: Buffer): Promise<number | null> {
 // 整文件探测真实时长（秒）。用于转码格式浏览器拿不到时长的可靠兜底（head 2MB 可能不含时长信息）。
 // 优先 ffprobe（已随 ffmpeg 安装，支持专有格式），失败再回退 music-metadata。
 export async function getTrackDuration(accountId: string, filePath: string): Promise<number | null> {
-  const client: any = getClient(accountId)
-  let buf: Buffer
-  try {
-    const resp: any = await client.customRequest(filePath, { method: 'GET' })
-    buf = Buffer.from(await resp.arrayBuffer())
-  } catch {
-    return null
+  // 时长信息在容器头部就能读到（APE 头部即含 total samples），取 2MB 足够，不必下整首
+  const head = await fetchHead(accountId, filePath, 2 * 1024 * 1024)
+  if (head && head.length) {
+    try {
+      const d = await ffprobeDuration(head)
+      if (d != null) return d
+    } catch {
+      /* ignore */
+    }
+    try {
+      const meta = await mm.parseBuffer(head, { path: filePath })
+      if (typeof meta.format.duration === 'number' && isFinite(meta.format.duration)) return meta.format.duration
+    } catch {
+      /* ignore */
+    }
   }
-  try {
-    const d = await ffprobeDuration(buf)
-    if (d != null) return d
-  } catch {
-    /* ignore */
-  }
-  try {
-    const meta = await mm.parseBuffer(buf, { path: filePath })
-    if (typeof meta.format.duration === 'number' && isFinite(meta.format.duration)) return meta.format.duration
-  } catch {
-    /* ignore */
+  // 兜底：整读（仅当头部拿不到时才付这个代价）
+  const whole = await fetchWhole(accountId, filePath)
+  if (whole) {
+    try {
+      const d = await ffprobeDuration(whole)
+      if (d != null) return d
+    } catch {
+      /* ignore */
+    }
+    try {
+      const meta = await mm.parseBuffer(whole, { path: filePath })
+      if (typeof meta.format.duration === 'number' && isFinite(meta.format.duration)) return meta.format.duration
+    } catch {
+      /* ignore */
+    }
   }
   return null
 }
