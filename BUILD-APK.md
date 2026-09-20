@@ -1,4 +1,4 @@
-# 打包安卓 APK（OpMusic）
+# 打包安卓 APK（天剑音乐播放器）
 
 本仓库代码已改造为「环境无关」：同一套 React 前端在 **桌面 Electron / 浏览器 PWA / 安卓 Capacitor** 下通用。
 - 桌面与 PWA 已可在本仓库直接构建验证。
@@ -20,12 +20,12 @@
 ```bash
 npm install
 npm i -D @capacitor/cli @capacitor/core @capacitor/android
-npx cap init com.tianjian.music "OpMusic" --web-dir dist
+npx cap init com.tianjian.music "天剑音乐播放器" --web-dir dist
 npx cap add android        # 生成 android/ 工程
 ```
 
 ## 三、加入原生插件（本地流代理 + 刮削）
-推荐用标准插件包方式（会自动生成 Web 端桥接 `Capacitor.Plugins.OpMusic`，前端代码已调用它）：
+推荐用标准插件包方式（会自动生成 Web 端桥接 `Capacitor.Plugins.Tianjian`，前端代码已调用它）：
 
 ```bash
 # 另建一个临时插件工程
@@ -48,7 +48,7 @@ npx cap sync android
 > }});
 > ```
 > 同时需要一段 Web 桥接（在 main.tsx 里，当 `window.Capacitor` 存在时）：
-> `import { registerPlugin } from '@capacitor/core'; (window as any).Capacitor.Plugins.OpMusic = registerPlugin('OpMusic')`
+> `import { registerPlugin } from '@capacitor/core'; (window as any).Capacitor.Plugins.Tianjian = registerPlugin('Tianjian')`
 
 ## 四、允许明文流量（WebDAV 多为 http）
 编辑 `android/app/src/main/AndroidManifest.xml`，在 `<application>` 加：

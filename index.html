@@ -2,14 +2,39 @@
 <html lang="zh-CN">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, user-scalable=no" />
-    <meta name="theme-color" content="#0f0f12" />
+    <!-- viewport-fit=cover：让页面延伸到刘海与手势条区域，再由 env(safe-area-inset-*) 留白 -->
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover"
+    />
+    <meta name="theme-color" content="#16161a" />
+    <meta name="color-scheme" content="dark light" />
+    <meta name="description" content="天剑音乐播放器 —— 连接 WebDAV 网盘，播放云端音乐" />
+
+    <!-- 安卓 / 鸿蒙：声明为可安装的 Web App（独立窗口、全屏、状态栏融合） -->
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="application-name" content="天剑音乐" />
+    <meta name="format-detection" content="telephone=no" />
+
+    <!-- iOS Safari -->
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="天剑音乐" />
+
     <link rel="manifest" href="./manifest.webmanifest" />
     <link rel="icon" type="image/svg+xml" href="./icon.svg" />
-    <link rel="apple-touch-icon" href="./icon.svg" />
-    <title>OpMusic</title>
+    <link rel="icon" type="image/png" sizes="32x32" href="./favicon-32.png" />
+    <link rel="apple-touch-icon" href="./apple-touch-icon.png" />
+
+    <title>天剑音乐播放器</title>
+    <style>
+      /* 首屏底色，避免加载瞬间白闪（尤其手机深色模式） */
+      html,
+      body {
+        margin: 0;
+        background: #16161a;
+      }
+    </style>
   </head>
   <body>
     <div id="root"></div>

@@ -1,19 +1,57 @@
 {
-  "name": "OpMusic",
-  "short_name": "OpMusic",
-  "description": "连接 WebDAV 网盘、播放本地与云端音乐的播放器",
+  "name": "天剑音乐播放器",
+  "short_name": "天剑音乐",
+  "description": "连接 WebDAV 网盘，播放云端与本地音乐",
+  "id": "/",
   "start_url": ".",
   "scope": ".",
   "display": "standalone",
-  "orientation": "portrait",
-  "background_color": "#0f0f12",
-  "theme_color": "#0f0f12",
+  "display_override": ["standalone", "minimal-ui"],
+  "orientation": "portrait-primary",
+  "background_color": "#16161a",
+  "theme_color": "#16161a",
+  "lang": "zh-CN",
+  "dir": "ltr",
+  "categories": ["music", "entertainment"],
+  "prefer_related_applications": false,
   "icons": [
+    {
+      "src": "./icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "./icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "./icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    },
     {
       "src": "./icon.svg",
       "sizes": "any",
       "type": "image/svg+xml",
-      "purpose": "any maskable"
+      "purpose": "any"
+    }
+  ],
+  "shortcuts": [
+    {
+      "name": "音乐库",
+      "short_name": "音乐库",
+      "url": "./?tab=library",
+      "icons": [{ "src": "./icon-192.png", "sizes": "192x192", "type": "image/png" }]
+    },
+    {
+      "name": "我的收藏",
+      "short_name": "收藏",
+      "url": "./?tab=favorites",
+      "icons": [{ "src": "./icon-192.png", "sizes": "192x192", "type": "image/png" }]
     }
   ]
 }

@@ -1,24 +1,31 @@
-# 依赖与构建产物
+# 依赖
 node_modules/
+
+# 构建产物（由 CI 或本地构建生成）
 dist/
 dist-electron/
 release/
-*.tsbuildinfo
 
-# 运行时数据（含明文 WebDAV 密码，切勿提交）
-/data/
+# 打包缓存
+*.tsbuildinfo
+.cache/
+
+# 运行数据（含 WebDAV 凭据，绝不入库）
 data/
+server/data/
+
+# 安卓工程（Capacitor 生成，体积大且含本机路径）
+android/
+ios/
+capacitor/android/build/
+
+# 编辑器 / 系统
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
 
 # 日志
 *.log
-/tmp/
-
-# 系统 / 编辑器
-.DS_Store
-.idea/
-.vscode/
-*.zip
-!tianjian-pwa.zip
-
-# 本地临时推送代理（含访问令牌，禁止提交）
-gitpush-proxy.mjs
+npm-debug.log*

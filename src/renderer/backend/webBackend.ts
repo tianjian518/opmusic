@@ -48,10 +48,35 @@ function lsSet(key: string, val: any) {
   }
 }
 
+// ---- 服务器模式的列目录 / 搜索：全部交给同源后端 /api 代理 ----
+// 浏览器端不持有 WebDAV 凭据，也不直连网盘，因此统一走服务端。
+async function serverListFiles(accountId: string, dir: string): Promise<FileItem[]> {
+  const r = await fetch(`/api/list?acct=${encodeURIComponent(accountId)}&path=${encodeURIComponent(dir)}`)
+  if (!r.ok) throw new Error('列目录失败：' + r.status)
+  const data = (await r.json()) as FileItem[]
+  return data
+}
+
+async function serverSearch(accountId: string, root: string, kw: string): Promise<FileItem[]> {
+  const r = await fetch(
+    `/api/search?acct=${encodeURIComponent(accountId)}&path=${encodeURIComponent(root)}&kw=${encodeURIComponent(kw)}`
+  )
+  if (!r.ok) throw new Error('搜索失败：' + r.status)
+  return (await r.json()) as FileItem[]
+}
+
+async function serverCollectAudio(accountId: string, dir: string): Promise<FileItem[]> {
+  const r = await fetch(
+    `/api/collect?acct=${encodeURIComponent(accountId)}&path=${encodeURIComponent(dir)}`
+  )
+  if (!r.ok) throw new Error('收集音频失败：' + r.status)
+  return (await r.json()) as FileItem[]
+}
+
 // 若有 Capacitor 原生插件（安卓 APK），把账号同步过去，供本地流代理按 id 解析凭据
 function pushAccountsToNative(accounts: AccountLite[]) {
   const cap = (window as any).Capacitor
-  const plugin = cap?.Plugins?.OpMusic
+  const plugin = cap?.Plugins?.Tianjian
   if (plugin?.setAccounts) {
     try {
       plugin.setAccounts({ accounts })
@@ -101,22 +126,11 @@ async function listFiles(accountId: string, dir: string): Promise<FileItem[]> {
   return mapItems(arr as any[])
 }
 
-// 服务端模式：列目录走同源后端 /api/list（后端用服务端凭据连 WebDAV，彻底绕开浏览器 CORS）
-async function serverListFiles(accountId: string, dir: string): Promise<FileItem[]> {
-  const r = await fetch(`/api/list?acct=${encodeURIComponent(accountId)}&path=${encodeURIComponent(dir)}`)
-  if (!r.ok) throw new Error('列目录失败: ' + r.status)
-  const j = await r.json()
-  return (j.items || []) as FileItem[]
-}
-
-// 当前生效的列表函数（SERVER 模式走后端代理，否则浏览器直连 WebDAV）
-const activeList = SERVER ? serverListFiles : listFiles
-
 async function collectAudio(accountId: string, dir: string, depth = 6): Promise<FileItem[]> {
   const out: FileItem[] = []
   async function walk(d: string, dep: number) {
     if (dep > depth) return
-    const list = await activeList(accountId, d)
+    const list = await listFiles(accountId, d)
     for (const it of list) {
       if (it.isDir) await walk(it.path, dep + 1)
       else if (isAudio(it.name)) out.push(it)
@@ -131,7 +145,7 @@ async function search(accountId: string, root: string, kw: string, depth = 3): P
   const out: FileItem[] = []
   async function walk(dir: string, d: number) {
     if (d > depth) return
-    const list = await activeList(accountId, dir)
+    const list = await listFiles(accountId, dir)
     for (const it of list) {
       if (it.name.toLowerCase().includes(kwl)) out.push(it)
       if (it.isDir) await walk(it.path, d + 1)
@@ -181,33 +195,35 @@ export const webBackend: Backend = {
   },
 
   files: {
-    list: activeList,
-    search,
-    collectAudio
+    // 服务器模式下账号只存在于后端，浏览器端 localStorage 里没有凭据，
+    // 必须走后端 /api/list 代理；否则列目录必然为空。
+    list: SERVER ? serverListFiles : listFiles,
+    search: SERVER ? serverSearch : search,
+    collectAudio: SERVER ? serverCollectAudio : collectAudio
   },
 
   stream: {
-    base: async () => (SERVER ? '' : nativeStreamBase()),
+    base: async () => (SERVER || nativeStreamBase() ? '' : ''),
     url: async (acct, filePath) => {
+      // 服务器模式：同源 /stream（后端持凭据并转发 Range，彻底绕开 CORS）
+      if (SERVER) return `/stream?acct=${encodeURIComponent(acct)}&path=${encodeURIComponent(filePath)}`
       const base = nativeStreamBase()
       if (base) return `${base}/stream?acct=${encodeURIComponent(acct)}&path=${encodeURIComponent(filePath)}`
-      if (SERVER) return `/stream?acct=${encodeURIComponent(acct)}&path=${encodeURIComponent(filePath)}`
       const acc = readAccounts().find((a) => a.id === acct)
       if (!acc) throw new Error('账号不存在')
       return webdavDirectUrl(acc, filePath)
     },
     coverUrl: async (acct, dir, artist?, album?, title?) => {
-      const base = nativeStreamBase()
-      if (base) {
-        let u = `${base}/cover?acct=${encodeURIComponent(acct)}&path=${encodeURIComponent(dir)}`
+      if (SERVER) {
+        let u = `/cover?acct=${encodeURIComponent(acct)}&path=${encodeURIComponent(dir)}`
         if (artist) u += `&artist=${encodeURIComponent(artist)}`
         if (album) u += `&album=${encodeURIComponent(album)}`
         if (title) u += `&title=${encodeURIComponent(title)}`
         return u
       }
-      // 服务端模式：封面走同源后端 /cover（能用网盘内 folder.jpg，也支持在线刮削兜底）
-      if (SERVER) {
-        let u = `/cover?acct=${encodeURIComponent(acct)}&path=${encodeURIComponent(dir)}`
+      const base = nativeStreamBase()
+      if (base) {
+        let u = `${base}/cover?acct=${encodeURIComponent(acct)}&path=${encodeURIComponent(dir)}`
         if (artist) u += `&artist=${encodeURIComponent(artist)}`
         if (album) u += `&album=${encodeURIComponent(album)}`
         if (title) u += `&title=${encodeURIComponent(title)}`
@@ -221,33 +237,18 @@ export const webBackend: Backend = {
       return ''
     },
     lyricsUrl: async (acct, filePath) => {
+      // 服务器模式：同源 /lyrics（后端读取同目录同名 .lrc）
+      if (SERVER) return `/lyrics?acct=${encodeURIComponent(acct)}&path=${encodeURIComponent(filePath)}`
       const base = nativeStreamBase()
       if (base) return `${base}/lyrics?acct=${encodeURIComponent(acct)}&path=${encodeURIComponent(filePath)}`
-      if (SERVER) return `/lyrics?acct=${encodeURIComponent(acct)}&path=${encodeURIComponent(filePath)}`
       return '' // 纯浏览器无本地代理：由 loadLyrics 自动降级到在线歌词
     }
   },
 
   meta: {
     info: async (artist, album, _title?, _force?): Promise<TrackMetaInfo> => {
-      // 网页版：歌手简介主源是网易云，但它不带 CORS 头，浏览器直连拿不到 —— 必须走服务端代理。
-      // 代理没结果时再落到浏览器端（MusicBrainz / Wikipedia 支持 CORS）兜底。
-      if (SERVER) {
-        try {
-          const q = `artist=${encodeURIComponent(artist || '')}&album=${encodeURIComponent(
-            album || ''
-          )}&title=${encodeURIComponent(_title || '')}`
-          const r = await fetch(`/api/meta-info?${q}`)
-          if (r.ok) {
-            const j = (await r.json()) as TrackMetaInfo
-            if (j && (j.artistBio || j.albumName || j.albumYear)) return j
-          }
-        } catch {
-          /* 后端不可达，落到浏览器兜底 */
-        }
-      }
       const cap = (window as any).Capacitor
-      const plugin = cap?.Plugins?.OpMusic
+      const plugin = cap?.Plugins?.Tianjian
       if (plugin?.metaInfo) {
         try {
           const r = await plugin.metaInfo({ artist, album })
@@ -266,7 +267,7 @@ export const webBackend: Backend = {
         }
       : async (acct, path): Promise<{ artist?: string; album?: string; title?: string } | null> => {
           const cap = (window as any).Capacitor
-          const plugin = cap?.Plugins?.OpMusic
+          const plugin = cap?.Plugins?.Tianjian
           if (plugin?.getTags) {
             try {
               const r = await plugin.getTags({ acct, path })
@@ -290,23 +291,8 @@ export const webBackend: Backend = {
 
   lyrics: {
     online: async (artist, title): Promise<string | null> => {
-      // 网易云不返回 CORS 头，浏览器直连必被拦，所以网页版先走服务端代理（服务器能直连网易云）；
-      // 代理没结果时再用浏览器端多源（lrclib / lyrics.ovh 支持 CORS）兜底，双保险。
-      if (SERVER) {
-        try {
-          const r = await fetch(
-            `/api/lyrics-online?artist=${encodeURIComponent(artist || '')}&title=${encodeURIComponent(title || '')}`
-          )
-          if (r.ok) {
-            const j = (await r.json()) as { lyrics?: string }
-            if (j?.lyrics && j.lyrics.trim()) return j.lyrics
-          }
-        } catch {
-          /* 后端不可达，落到浏览器兜底 */
-        }
-      }
       const cap = (window as any).Capacitor
-      const plugin = cap?.Plugins?.OpMusic
+      const plugin = cap?.Plugins?.Tianjian
       if (plugin?.onlineLyrics) {
         try {
           const r = await plugin.onlineLyrics({ artist, title })
@@ -320,35 +306,8 @@ export const webBackend: Backend = {
   },
 
   store: {
-    get: async <T = any>(key: string): Promise<T> => {
-      // 服务端模式：从后端 /api/store 读取（数据存在服务器 /data，跨设备/跨浏览器共享）
-      if (SERVER) {
-        try {
-          const r = await fetch('/api/store?key=' + encodeURIComponent(key))
-          if (r.ok) return (await r.json()).value as T
-        } catch {
-          /* 后端不可达时降级到 localStorage */
-        }
-        return lsGet<T>(key, (undefined as unknown) as T)
-      }
-      return lsGet<T>(key, (undefined as unknown) as T)
-    },
-    set: async (key, val) => {
-      // 服务端模式：写入后端 /api/store（服务端持久化，换设备也不丢）
-      if (SERVER) {
-        try {
-          await fetch('/api/store', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ key, value: val })
-          })
-          return
-        } catch {
-          /* 后端不可达时降级到 localStorage */
-        }
-      }
-      lsSet(key, val)
-    }
+    get: async <T = any>(key: string): Promise<T> => lsGet<T>(key, (undefined as unknown) as T),
+    set: async (key, val) => lsSet(key, val)
   },
 
   lyric: {

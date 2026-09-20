@@ -1,6 +1,6 @@
 // 极简 Service Worker：缓存应用外壳，使 PWA 可“添加到主屏幕”安装并离线打开。
 // 注意：媒体/封面走运行时网络缓存，不预存大文件。
-const CACHE = 'opmusic-shell-v1'
+const CACHE = 'tianjian-shell-v1'
 const SHELL = ['./', './index.html', './manifest.webmanifest', './icon.svg']
 
 self.addEventListener('install', (e) => {

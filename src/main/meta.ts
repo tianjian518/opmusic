@@ -4,7 +4,7 @@ import { appStore } from './store'
 // 数据源：MusicBrainz（专辑/歌手检索，需 UA）、Cover Art Archive（封面）、
 //         Wikipedia（歌手简介）、lrclib（带时间轴 LRC）、lyrics.ovh（纯文本兜底）
 
-const UA = 'OpMusicPlayer/1.0 (local music player)'
+const UA = 'TianjianMusicPlayer/1.0 (local music player)'
 const MB = 'https://musicbrainz.org/ws/2'
 const CA = 'https://coverartarchive.org/release'
 

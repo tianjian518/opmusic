@@ -1,14 +1,29 @@
 import { useEffect, useRef, useState } from 'react'
 import { useStore, registerAudioEl } from '../store'
 import { api, formatTime, currentLrc, needsTranscode } from '../api'
+import {
+  IconPlay,
+  IconPause,
+  IconPrev,
+  IconNext,
+  IconShuffle,
+  IconRepeat,
+  IconRepeatOne,
+  IconVolume,
+  IconVolumeMute,
+  IconLyrics,
+  IconSliders,
+  IconMonitor,
+  IconInfo,
+  IconExpand,
+  IconHeart,
+  IconHeartFilled,
+  IconMusic,
+  IconDisc
+} from './Icons'
 
 const FREQS = [31, 62, 125, 250, 500, 1000, 2000, 4000, 8000, 16000]
-const MODE_ICON: Record<string, string> = {
-  order: '🔁',
-  'loop-list': '🔂',
-  'loop-one': '🔂①',
-  shuffle: '🔀'
-}
+
 const MODE_LABEL: Record<string, string> = {
   order: '顺序播放',
   'loop-list': '列表循环',
@@ -35,10 +50,9 @@ export default function PlayerBar() {
     setPlayMode,
     setLyric,
     setShowNowPlaying,
-    showNowPlaying,
-    fetchTrackInfo,
-    setSeeking,
-    toggle
+    toggle,
+    favorites,
+    toggleFavorite
   } = useStore()
 
   const audioRef = useRef<HTMLAudioElement>(null)
@@ -46,9 +60,10 @@ export default function PlayerBar() {
   const filtersRef = useRef<BiquadFilterNode[]>([])
   const durationRef = useRef<number | null>(null)
   const [cover, setCover] = useState('')
-  const [showVol, setShowVol] = useState(false)
+  const [meta, setMeta] = useState<{ artist?: string; album?: string; title?: string } | null>(null)
 
   const cur = currentIndex >= 0 ? queue[currentIndex] : null
+  const isFav = !!cur && favorites.some((f) => f.path === cur.path)
 
   function ensureGraph() {
     const a = audioRef.current
@@ -96,31 +111,35 @@ export default function PlayerBar() {
       if (isPlaying) audioRef.current!.play().catch(() => {})
     })
     // 内嵌标签（歌手/专辑/时长）并行获取，用于封面、歌曲信息与转码时长补正
-    useStore.getState().resolveMeta(cur.accountId, cur.path).then((m) => {
-      if (cancelled) return
-      // 封面：本地优先，缺失时按歌手/专辑在线刮削
-      api.stream
-        .coverUrl(cur.accountId, cur.dir, m.artist, m.album, m.title)
-        .then(setCover)
-        .catch(() => setCover(''))
-      // 拉取歌手/专辑简介（即便只有歌名也尝试：按歌名在网易云搜出对应歌手）
-      fetchTrackInfo(m.artist || '', m.album || '', m.title)
-      // 转码流没有 Content-Length，浏览器拿不到真实时长：拿到时长后直接写 store，
-      // 进度条稍后补正（不再重新加载音频，避免再次卡顿）。
-      if (transcode) {
-        let dur = m.duration
-        const applyDur = (d?: number) => {
-          if (d && isFinite(d) && !cancelled) {
-            durationRef.current = d
-            setDuration(d)
+    useStore
+      .getState()
+      .resolveMeta(cur.accountId, cur.path)
+      .then((m) => {
+        if (cancelled) return
+        setMeta(m)
+        // 封面：本地优先，缺失时按歌手/专辑在线刮削
+        api.stream
+          .coverUrl(cur.accountId, cur.dir, m.artist, m.album, m.title)
+          .then(setCover)
+          .catch(() => setCover(''))
+        // 拉取歌手/专辑简介
+        useStore.getState().fetchTrackInfo(m.artist || '', m.album || '', m.title)
+        // 转码流没有 Content-Length，浏览器拿不到真实时长：拿到时长后直接写 store，
+        // 进度条稍后补正（不再重新加载音频，避免再次卡顿）。
+        if (transcode) {
+          let dur = m.duration
+          const applyDur = (d?: number) => {
+            if (d && isFinite(d) && !cancelled) {
+              durationRef.current = d
+              setDuration(d)
+            }
+          }
+          if (dur && isFinite(dur)) applyDur(dur)
+          else if (api.meta.duration) {
+            api.meta.duration(cur.accountId, cur.path).then(applyDur).catch(() => {})
           }
         }
-        if (dur && isFinite(dur)) applyDur(dur)
-        else if (api.meta.duration) {
-          api.meta.duration(cur.accountId, cur.path).then(applyDur).catch(() => {})
-        }
-      }
-    })
+      })
     return () => {
       cancelled = true
     }
@@ -134,8 +153,6 @@ export default function PlayerBar() {
     if (isPlaying) {
       ensureGraph()
       ctxRef.current?.resume()
-      // 首次切歌时 src 由 currentIndex 副作用异步设置；此处等 src 就绪再播，
-      // 避免对空 src 调用 play() 被浏览器拒绝（静默失败 → 点了不响）。
       if (a.src) a.play().catch(() => {})
     } else {
       a.pause()
@@ -185,8 +202,6 @@ export default function PlayerBar() {
     const a = audioRef.current
     if (!a) return
     // 拖动进度条时，timeupdate 会抢回旧播放位置，导致歌词/滑块“跟不住”甚至跳空。
-    // 拖动期间（指针按下）及音频真正 seek 完成前，暂停用 timeupdate 覆盖 currentTime，
-    // 完全由拖动值驱动，松手并 seek 完成后再恢复正常同步。
     if (useStore.getState().isSeeking || a.seeking) return
     setProgress(a.currentTime)
     const text = currentLrc(lyrics, a.currentTime)
@@ -213,15 +228,29 @@ export default function PlayerBar() {
       if (a) {
         a.currentTime = 0
         setProgress(0)
-        const text = ''
-        setLyric(text)
-        if (desktopLyric) api.lyric.set(text)
+        setLyric('')
+        if (desktopLyric) api.lyric.set('')
         a.play().catch(() => {})
       }
       return
     }
     next()
   }
+
+  const mode = settings.playMode
+  const modeIcon =
+    mode === 'shuffle' ? <IconShuffle size={17} /> : mode === 'loop-one' ? <IconRepeatOne size={17} /> : <IconRepeat size={17} />
+  const modeOn = mode !== 'order'
+  const pct = duration > 0 ? Math.min(100, (currentTime / duration) * 100) : 0
+
+  const title = meta?.title || (cur ? cur.name : '未播放')
+  const sub = meta?.artist
+    ? [meta.artist, meta.album].filter(Boolean).join(' — ')
+    : cur
+    ? queue.length
+      ? `队列 ${currentIndex + 1}/${queue.length}`
+      : '从音乐库选一首歌吧'
+    : '从音乐库选一首歌吧'
 
   return (
     <div className="player">
@@ -237,15 +266,15 @@ export default function PlayerBar() {
           // 转码流没有 Content-Length，浏览器拿不到时长（duration=Infinity）；用 URL 上的 &dur= 或预取时长兜底
           if (!isFinite(dur)) {
             const param = new URL(a.src, location.href).searchParams.get('dur')
-            dur = param ? parseFloat(param) : (durationRef.current || 0)
+            dur = param ? parseFloat(param) : durationRef.current || 0
           }
           setDuration(dur || 0)
           // 恢复上次播放进度（仅定位，不自动播放）
-          const seek = useStore.getState().pendingSeek
-          if (seek != null) {
+          const pending = useStore.getState().pendingSeek
+          if (pending != null) {
             try {
-              a.currentTime = seek
-              setProgress(seek)
+              a.currentTime = pending
+              setProgress(pending)
             } catch {
               /* ignore */
             }
@@ -256,12 +285,18 @@ export default function PlayerBar() {
           const el = e.currentTarget
           const code = el.error?.code
           if (code === 3 || code === 4) {
-            const cur = useStore.getState().queue[useStore.getState().currentIndex]
-            const name = cur?.name || ''
+            const c = useStore.getState().queue[useStore.getState().currentIndex]
+            const name = c?.name || ''
             if (needsTranscode(name)) {
-              useStore.getState().setToast(`「${name}」需转码：请确认本机已安装 ffmpeg（桌面端用其实时转码为 MP3）；否则请转换为 MP3 / FLAC 后播放`)
+              useStore
+                .getState()
+                .setToast(
+                  `「${name}」需转码：请确认本机已安装 ffmpeg（桌面端用其实时转码为 MP3）；否则请转换为 MP3 / FLAC 后播放`
+                )
             } else {
-              useStore.getState().setToast(`「${name}」无法播放：音频解码失败，可能是文件损坏或服务器不支持 Range 续传`)
+              useStore
+                .getState()
+                .setToast(`「${name}」无法播放：音频解码失败，可能是文件损坏或服务器不支持 Range 续传`)
             }
           } else {
             console.error('[audio] 播放出错:', code, el.error?.message, el.src)
@@ -270,76 +305,139 @@ export default function PlayerBar() {
         }}
         onEnded={onEnded}
       />
-      <div
-        className="cover cover-click"
-        style={cover ? { backgroundImage: `url(${cover})` } : undefined}
-        onClick={() => setShowNowPlaying(true)}
-        title="点击进入全屏播放"
-      />
-      <div className="now" onClick={() => setShowNowPlaying(true)}>
-        <div className="t">{cur ? cur.name : '未播放'}</div>
-        <div className="s">
-          {queue.length ? `队列 ${currentIndex + 1}/${queue.length}` : '从音乐库选一首歌吧'}
+
+      {/* ---------- 左：封面 + 曲名 ---------- */}
+      <div className="player-left">
+        <div
+          className="cover cover-click"
+          style={cover ? { backgroundImage: `url(${cover})` } : undefined}
+          onClick={() => setShowNowPlaying(true)}
+          title="点击进入全屏播放"
+          role="button"
+        >
+          {!cover && <IconMusic size={20} />}
         </div>
-      </div>
-      <div className="controls">
-        <button onClick={prev} title="上一首">⏮</button>
-        <button className="primary" onClick={togglePlay}>{isPlaying ? '⏸' : '▶'}</button>
-        <button onClick={next} title="下一首">⏭</button>
-        <button onClick={cycleMode} title={`播放模式：${MODE_LABEL[settings.playMode] || '顺序播放'}（点击切换）`}>{MODE_ICON[settings.playMode]}</button>
-        <button className="vol-toggle" onClick={() => setShowVol((v) => !v)} title="音量">
-          {settings.volume === 0 ? '🔇' : '🔊'}
+        <div className="now">
+          <div className="t" title={title}>
+            {title}
+          </div>
+          <div className="s" onClick={() => setShowNowPlaying(true)} title="点击进入全屏播放">
+            {sub}
+          </div>
+        </div>
+        <button
+          className={`ctrl-btn heart-btn ${isFav ? 'on' : ''}`}
+          title={isFav ? '取消收藏' : '收藏'}
+          onClick={() => cur && toggleFavorite({ accountId: cur.accountId, path: cur.path, name: cur.name })}
+        >
+          {isFav ? <IconHeartFilled size={18} /> : <IconHeart size={18} />}
         </button>
       </div>
-      {showVol && (
-        <div className="vol-pop" onClick={(e) => e.stopPropagation()}>
-          <span>🔈</span>
+
+      {/* ---------- 中：控制 + 进度 ---------- */}
+      <div className="player-center">
+        <div className="controls">
+          <button
+            className={`ctrl-btn ${modeOn ? 'on' : ''}`}
+            onClick={cycleMode}
+            title={`播放模式：${MODE_LABEL[mode] || '顺序播放'}（点击切换）`}
+          >
+            {modeIcon}
+          </button>
+          <button className="ctrl-btn" onClick={prev} title="上一首">
+            <IconPrev size={19} />
+          </button>
+          <button className="play-btn" onClick={togglePlay} title={isPlaying ? '暂停' : '播放'}>
+            {isPlaying ? <IconPause size={19} /> : <IconPlay size={19} style={{ marginLeft: 2 }} />}
+          </button>
+          <button className="ctrl-btn" onClick={next} title="下一首">
+            <IconNext size={19} />
+          </button>
+          <button
+            className="ctrl-btn"
+            onClick={() => setShowNowPlaying(true)}
+            title="全屏播放"
+          >
+            <IconDisc size={18} />
+          </button>
+        </div>
+
+        <div className="progress">
+          <span className="meta">{formatTime(currentTime)}</span>
           <input
+            type="range"
+            min={0}
+            max={duration || 0}
+            step={0.1}
+            value={Math.min(currentTime, duration || 0)}
+            onPointerDown={() => useStore.getState().setSeeking(true)}
+            onPointerUp={() => useStore.getState().setSeeking(false)}
+            onPointerCancel={() => useStore.getState().setSeeking(false)}
+            onChange={(e) => seek(parseFloat(e.target.value))}
+            style={{ ['--track' as any]: `linear-gradient(to right, var(--accent) ${pct}%, var(--bg-4) ${pct}%)` }}
+          />
+          <span className="meta">{formatTime(duration)}</span>
+        </div>
+      </div>
+
+      {/* ---------- 右：音量 + 功能 ---------- */}
+      <div className="player-right">
+        <button
+          className="ctrl-btn opt"
+          onClick={() => setVolume(settings.volume > 0 ? 0 : 0.8)}
+          title={settings.volume > 0 ? '静音' : '取消静音'}
+        >
+          {settings.volume > 0 ? <IconVolume size={17} /> : <IconVolumeMute size={17} />}
+        </button>
+        <div className="vol-wrap">
+          <input
+            className="vol"
             type="range"
             min={0}
             max={1}
             step={0.01}
             value={settings.volume}
             onChange={(e) => setVolume(parseFloat(e.target.value))}
+            title="音量"
+            style={{
+              ['--track' as any]: `linear-gradient(to right, var(--accent) ${settings.volume * 100}%, var(--bg-4) ${
+                settings.volume * 100
+              }%)`
+            }}
           />
         </div>
-      )}
-      <div className="progress">
-        <span className="meta">{formatTime(currentTime)}</span>
-        <input
-          type="range"
-          min={0}
-          max={duration || 0}
-          step={0.1}
-          value={Math.min(currentTime, duration || 0)}
-          onPointerDown={() => setSeeking(true)}
-          onPointerUp={() => setSeeking(false)}
-          onPointerCancel={() => setSeeking(false)}
-          onChange={(e) => seek(parseFloat(e.target.value))}
-        />
-        <span className="meta">{formatTime(duration)}</span>
+        <button
+          className={`ctrl-btn ${useStore.getState().showLyrics ? 'on' : ''}`}
+          onClick={() => toggle('showLyrics')}
+          title="歌词"
+        >
+          <IconLyrics size={17} />
+        </button>
+        <button
+          className={`ctrl-btn ${useStore.getState().showInfo ? 'on' : ''}`}
+          onClick={() => toggle('showInfo')}
+          title="歌曲信息"
+        >
+          <IconInfo size={17} />
+        </button>
+        <button
+          className={`ctrl-btn opt ${useStore.getState().showEq ? 'on' : ''}`}
+          onClick={() => toggle('showEq')}
+          title="均衡器"
+        >
+          <IconSliders size={17} />
+        </button>
+        <button
+          className={`ctrl-btn opt ${desktopLyric ? 'on' : ''}`}
+          onClick={() => toggle('desktopLyric')}
+          title="桌面歌词"
+        >
+          <IconMonitor size={17} />
+        </button>
+        <button className="ctrl-btn" onClick={() => setShowNowPlaying(true)} title="全屏播放">
+          <IconExpand size={17} />
+        </button>
       </div>
-      <input
-        className="vol"
-        type="range"
-        min={0}
-        max={1}
-        step={0.01}
-        value={settings.volume}
-        onChange={(e) => setVolume(parseFloat(e.target.value))}
-        title="音量"
-      />
-      <button className="ghost" onClick={() => toggle('showInfo')} title="歌曲信息" style={{ color: useStore.getState().showInfo ? 'var(--accent)' : undefined }}>
-        ℹ️
-      </button>
-      <button className="now-btn" onClick={() => setShowNowPlaying(true)} title="全屏播放">
-        🎴 全屏
-      </button>
-      <button className="ghost" onClick={() => toggle('showLyrics')} title="歌词">📝</button>
-      <button className="ghost" onClick={() => toggle('showEq')} title="均衡器">🎛️</button>
-      <button className="ghost" onClick={() => toggle('desktopLyric')} title="桌面歌词" style={{ color: desktopLyric ? 'var(--accent)' : undefined }}>
-        🖥️
-      </button>
     </div>
   )
 }

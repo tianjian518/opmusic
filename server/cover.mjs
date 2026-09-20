@@ -3,7 +3,7 @@
 // 改用 server/store.mjs 的缓存。
 import { getMetaCache, setMetaCache } from './store.mjs'
 
-const UA = 'OpMusicPlayer/1.0 (local music player)'
+const UA = 'TianjianMusicPlayer/1.0 (local music player)'
 const NCM_REFERER = 'https://music.163.com/'
 const MB = 'https://musicbrainz.org/ws/2'
 const CA = 'https://coverartarchive.org/release'

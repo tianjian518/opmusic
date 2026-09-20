@@ -2,7 +2,7 @@
 // 逻辑与 src/main/meta.ts 一致，但用 window.fetch + localStorage 缓存，
 // 封面直接返回可访问的 URL（不再经 Node 取字节）。
 
-const UA = 'OpMusicPlayer/1.0 (local music player)'
+const UA = 'TianjianMusicPlayer/1.0 (local music player)'
 const MB = 'https://musicbrainz.org/ws/2'
 const CA = 'https://coverartarchive.org/release'
 

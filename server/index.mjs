@@ -1,12 +1,11 @@
-// OpMusic —— 自托管 Web 后端
+// 天剑音乐播放器 —— 自托管 Web 后端
 // 职责：
 //   1) /api/accounts          账号 CRUD（WebDAV 凭据由服务端保管，供代理使用）
 //   2) /stream                代理 WebDAV 音频，支持 Range 续传；WMA/APE 用 ffmpeg 实时转 MP3
 //   3) /cover                 优先读目录内 folder.jpg/cover.jpg，缺失则在线刮削兜底
 //   4) /lyrics                读同名 .lrc
 //   5) /tags /duration        用 ffprobe / music-metadata 读内嵌标签与真实时长
-//   6) /api/store             通用键值存储（歌单/收藏/设置 服务端持久化，跨设备共享）
-//   7) 静态托管前端 dist/（SPA 回退）
+//   6) 静态托管前端 dist/（SPA 回退）
 // 直接用 `node server/index.mjs` 运行；Docker 中由镜像入口启动。
 import http from 'node:http'
 import fs from 'node:fs'
@@ -14,253 +13,8 @@ import path from 'node:path'
 import { spawn, execFileSync } from 'node:child_process'
 import { createClient } from 'webdav'
 import * as mm from 'music-metadata'
-import { getAccounts, getAccount, upsertAccount, deleteAccount, getKV, setKV } from './store.mjs'
+import { getAccounts, getAccount, upsertAccount, deleteAccount } from './store.mjs'
 import { coverBytesFor } from './cover.mjs'
-
-// ---- 在线歌词（服务端代理抓取，绕开浏览器 CORS）----
-// 网易云优先，lrclib / lyrics.ovh 兜底；与前端 webMeta.ts 逻辑一致，但由服务器发起请求。
-async function srvFetchJson(url, timeout = 8000, headers) {
-  const ctrl = new AbortController()
-  const t = setTimeout(() => ctrl.abort(), timeout)
-  try {
-    const res = await fetch(url, {
-      headers: { 'User-Agent': 'OpMusicPlayer/1.0', Accept: 'application/json', ...(headers || {}) },
-      signal: ctrl.signal
-    })
-    if (!res.ok) return null
-    return await res.json()
-  } catch {
-    return null
-  } finally {
-    clearTimeout(t)
-  }
-}
-async function srvNeteaseLyrics(artist, title) {
-  const trySearch = async (q) => {
-    const s = await srvFetchJson(
-      `https://music.163.com/api/search/get?type=1&s=${encodeURIComponent(q)}&limit=10`,
-      8000,
-      { Referer: 'https://music.163.com/' }
-    )
-    const songs = s?.result?.songs || []
-    if (!songs.length) return null
-    const fetched = await Promise.all(
-      songs.slice(0, 8).map(async (song) => {
-        if (!song.id) return null
-        const l = await srvFetchJson(
-          `https://music.163.com/api/song/lyric?id=${song.id}&lv=-1&kv=-1&tv=-1`,
-          8000,
-          { Referer: 'https://music.163.com/' }
-        )
-        const lyric = l?.lrc?.lyric || l?.tlyric?.lyric || ''
-        if (!lyric.trim()) return null
-        const names = (song.artists || []).map((a) => a.name).filter(Boolean)
-        // 歌手精确一致 > 包含关系 > 不匹配，避免被同名翻唱顶掉原唱
-        const artistExact = artist ? names.some((n) => n === artist) : false
-        const artistHit = artist
-          ? names.some((n) => n === artist || n.includes(artist) || artist.includes(n))
-          : true
-        // 歌名也要相近，防止搜出完全不相干的同名歌
-        const sn = String(song.name || '')
-        const titleHit = title ? sn === title || sn.includes(title) || title.includes(sn) : true
-        return { lyric, len: lyric.length, artistExact, artistHit, titleHit }
-      })
-    )
-    const ok = fetched.filter(Boolean)
-    if (!ok.length) return null
-    const score = (x) => (x.artistExact ? 4 : 0) + (x.artistHit ? 2 : 0) + (x.titleHit ? 1 : 0)
-    ok.sort((a, b) => score(b) - score(a) || b.len - a.len)
-    return ok[0].lyric
-  }
-  if (artist) {
-    const r = await trySearch(`${artist} ${title}`)
-    if (r) return r
-  }
-  return trySearch(title)
-}
-const SRV_LYRIC_SOURCES = [
-  srvNeteaseLyrics,
-  async (artist, title) => {
-    const d = await srvFetchJson(`https://lrclib.net/api/search?artist=${encodeURIComponent(artist)}&track=${encodeURIComponent(title)}`)
-    const list = Array.isArray(d) ? d : []
-    const w = list.find((x) => x?.syncedLyrics) || list[0]
-    return w?.syncedLyrics || w?.plainLyrics || null
-  },
-  async (artist, title) => {
-    if (!artist) return null
-    const p = await srvFetchJson(`https://api.lyrics.ovh/v1/${encodeURIComponent(artist)}/${encodeURIComponent(title)}`)
-    return p?.lyrics || null
-  }
-]
-async function onlineLyricsServer(artist, title) {
-  if (!artist && !title) return null
-  const combos = artist ? [[artist, title], ['', title]] : [['', title]]
-  for (const [a, t] of combos) {
-    let settled = false
-    let result = null
-    await new Promise((resolve) => {
-      let remaining = SRV_LYRIC_SOURCES.length
-      SRV_LYRIC_SOURCES.forEach((src) =>
-        src(a, t)
-          .then((r) => {
-            if (!settled && r && r.trim()) { settled = true; result = r; resolve(r) }
-            else { remaining--; if (remaining === 0) resolve(null) }
-          })
-          .catch(() => { remaining--; if (remaining === 0) resolve(null) })
-      )
-    })
-    if (result) return result
-  }
-  return null
-}
-
-// ---- 歌手信息 / 专辑信息（服务端代理抓取）----
-// 与压缩版 webMeta.ts 的 neteaseInfo + MusicBrainz/Wikipedia 兜底逻辑一致。
-// 必须放服务端：网易云 API 不返回 CORS 头，浏览器直连会被跨域拦截，歌手简介永远取不到。
-async function srvNeteaseInfo(artist, album, title) {
-  const result = {}
-  // 搜索词优先级：歌手+歌名 > 歌手+专辑 > 专辑 > 歌手 > 歌名
-  const queries = []
-  if (artist && title) queries.push(`${artist} ${title}`)
-  if (artist && album) queries.push(`${artist} ${album}`)
-  if (album) queries.push(album)
-  if (artist) queries.push(artist)
-  if (title) queries.push(title)
-  if (!queries.length) return result
-
-  let pick = null
-  for (const q of queries) {
-    const s = await srvFetchJson(
-      `https://music.163.com/api/search/get?type=1&s=${encodeURIComponent(q)}&limit=10`,
-      8000,
-      { Referer: 'https://music.163.com/' }
-    )
-    const songs = s?.result?.songs || []
-    if (!songs.length) continue
-    const titleNear = (sg) => !title || sg.name.includes(title) || title.includes(sg.name)
-    const artistHit = (sg) =>
-      artist ? (sg.artists || []).some((a) => a.name && (a.name === artist || a.name.includes(artist) || artist.includes(a.name))) : true
-    pick =
-      songs.find((sg) => artist && (sg.artists || []).some((a) => a.name === artist) && titleNear(sg)) ||
-      songs.find((sg) => artistHit(sg) && titleNear(sg)) ||
-      songs.find((sg) => artistHit(sg)) ||
-      songs[0]
-    if (pick) break
-  }
-  if (!pick) return result
-
-  const a0 = (pick.artists || [])[0]
-  if (a0?.id) {
-    const det = await srvFetchJson(`https://music.163.com/api/artist/introduction?id=${a0.id}`, 8000, {
-      Referer: 'https://music.163.com/'
-    })
-    const brief = det?.briefDesc || ''
-    const intro = (det?.introduction || [])
-      .map((x) => `${x.ti || ''}\n${x.txt || ''}`)
-      .filter((t) => t.trim())
-      .join('\n\n')
-    const bio = (brief + (intro ? '\n\n' + intro : '')).trim()
-    if (bio) result.artistBio = bio
-  }
-  // 专辑名优先用调用方传入的；网易云搜索翻唱多，仅当歌手精确一致时才采用其专辑
-  if (album) result.albumName = album
-  else if (pick.album?.name && a0 && a0.name === artist) result.albumName = pick.album.name
-  if (!result.albumYear && pick.album?.publishTime && a0 && a0.name === artist) {
-    const d = new Date(pick.album.publishTime)
-    if (!isNaN(d.getTime())) result.albumYear = String(d.getFullYear())
-  }
-  if (pick.album?.id) {
-    const al = await srvFetchJson(`https://music.163.com/api/album/${pick.album.id}`, 8000, {
-      Referer: 'https://music.163.com/'
-    })
-    if (al?.album) {
-      if (!result.albumName && al.album.name) result.albumName = al.album.name
-      if (!result.albumYear && al.album.publishTime) {
-        const d = new Date(al.album.publishTime)
-        if (!isNaN(d.getTime())) result.albumYear = String(d.getFullYear())
-      }
-    }
-  }
-  return result
-}
-
-const SRV_MB = 'https://musicbrainz.org/ws/2'
-async function srvInfoMusicBrainz(artist, album) {
-  const result = {}
-  if (artist) {
-    const a = await srvFetchJson(`${SRV_MB}/artist/?query=${encodeURIComponent('artist:' + artist)}&fmt=json&limit=1`)
-    const mbArtist = a?.artists?.[0]
-    if (mbArtist) {
-      const det = await srvFetchJson(`${SRV_MB}/artist/${mbArtist.id}?inc=url-rels&fmt=json`)
-      const wiki = (det?.relations || []).find((r) => r.type === 'wikipedia')
-      const wikiTitle = wiki?.url?.resource?.split('/wiki/')[1]
-      if (wikiTitle) {
-        const t = decodeURIComponent(wikiTitle)
-        let sum = await srvFetchJson(`https://zh.wikipedia.org/api/rest_v1/page/summary/${encodeURIComponent(t)}`)
-        if (!sum?.extract) sum = await srvFetchJson(`https://en.wikipedia.org/api/rest_v1/page/summary/${encodeURIComponent(t)}`)
-        if (sum?.extract) result.artistBio = sum.extract
-      }
-    }
-  }
-  if (album) {
-    const queries = []
-    if (artist) queries.push(`release:${album} AND artist:${artist}`)
-    queries.push(`release:${album}`)
-    for (const q of queries) {
-      const d = await srvFetchJson(`${SRV_MB}/release/?query=${encodeURIComponent(q)}&fmt=json&limit=1`)
-      const rel = d?.releases?.[0]
-      if (rel) {
-        result.albumName = rel.title
-        result.albumYear = rel.date ? String(rel.date).slice(0, 4) : undefined
-        break
-      }
-    }
-  }
-  return result
-}
-
-// 歌手直搜兜底：网易云歌曲搜索翻唱版本很多，选中的第一首常常不是本人（如「周杰伦 晴天」），
-// 导致取不到简介。此时直接用歌手搜索(type=100)拿本人 id，再取简介，命中率明显更高。
-async function srvNeteaseArtistBio(artist) {
-  if (!artist) return ''
-  const s = await srvFetchJson(
-    `https://music.163.com/api/search/get?type=100&s=${encodeURIComponent(artist)}&limit=10`,
-    8000,
-    { Referer: 'https://music.163.com/' }
-  )
-  const list = s?.result?.artists || []
-  if (!list.length) return ''
-  const a0 =
-    list.find((a) => a.name === artist) ||
-    list.find((a) => a.name && (a.name.includes(artist) || artist.includes(a.name))) ||
-    list[0]
-  if (!a0?.id) return ''
-  const det = await srvFetchJson(`https://music.163.com/api/artist/introduction?id=${a0.id}`, 8000, {
-    Referer: 'https://music.163.com/'
-  })
-  const brief = det?.briefDesc || ''
-  const intro = (det?.introduction || [])
-    .map((x) => `${x.ti || ''}\n${x.txt || ''}`)
-    .filter((t) => t.trim())
-    .join('\n\n')
-  return (brief + (intro ? '\n\n' + intro : '')).trim()
-}
-
-async function metaInfoServer(artist, album, title) {
-  const ne = await srvNeteaseInfo(artist || '', album || '', title || '')
-  // 简介缺失时用歌手直搜补齐（专辑等其它字段保留）
-  if (!ne.artistBio && artist) {
-    try {
-      const bio = await srvNeteaseArtistBio(artist)
-      if (bio) ne.artistBio = bio
-    } catch {
-      /* 忽略，继续兜底 */
-    }
-  }
-  if (ne.artistBio || ne.albumName || ne.albumYear) return ne
-  if (artist || album) return srvInfoMusicBrainz(artist || '', album || '')
-  return {}
-}
 
 const PORT = parseInt(process.env.PORT || '8080', 10)
 const DIST = process.env.DIST_DIR || path.join(process.cwd(), 'dist')
@@ -277,6 +31,54 @@ try {
   FFMPEG_OK = true
 } catch {
   FFMPEG_OK = false
+}
+
+// ---- 列目录 / 递归遍历：/api/list、/api/search、/api/collect 共用 ----
+
+// 可播放的音频扩展名（与前端保持一致的判定口径）
+const AUDIO_EXT = new Set(['mp3', 'flac', 'wav', 'ogg', 'm4a', 'aac', 'opus', 'ape', 'wma', 'mp4'])
+function isAudioFile(name) {
+  const i = name.lastIndexOf('.')
+  if (i < 0) return false
+  return AUDIO_EXT.has(name.slice(i + 1).toLowerCase())
+}
+
+// 搜索深度限制：防止在超大网盘目录上无限递归打爆服务端
+const MAX_SEARCH_DEPTH = 3
+const MAX_COLLECT_DEPTH = 6
+
+// 列一层目录，按「目录在前、名称排序」返回，字段与前端 FileItem 对齐
+async function listDir(client, dir) {
+  const items = await client.getDirectoryContents(dir, { includeSelf: false })
+  const arr = Array.isArray(items) ? items : (items && items.data) || []
+  return arr
+    .map((it) => ({
+      name: it.basename,
+      path: it.filename,
+      isDir: it.type === 'directory',
+      size: it.size || 0,
+      lastmod: it.lastmod || ''
+    }))
+    .sort((a, b) =>
+      a.isDir === b.isDir ? a.name.localeCompare(b.name, 'zh') : a.isDir ? -1 : 1
+    )
+}
+
+// 递归遍历目录；onItem 返回 false 表示不再深入该目录
+async function walkDirs(client, dir, depth, maxDepth, onItem) {
+  if (depth > maxDepth) return
+  let list
+  try {
+    list = await listDir(client, dir)
+  } catch {
+    return // 单个目录失败不影响整体遍历
+  }
+  for (const it of list) {
+    const descend = await onItem(it)
+    if (it.isDir && descend !== false) {
+      await walkDirs(client, it.path, depth + 1, maxDepth, onItem)
+    }
+  }
 }
 
 // ---- WebDAV 客户端缓存 ----
@@ -443,6 +245,52 @@ async function handleApi(req, res, url) {
   if (url.pathname === '/api/accounts' && req.method === 'GET') {
     return sendJson(res, 200, getAccounts())
   }
+  // /api/list —— 代理列目录（浏览器端不持有凭据，必须由服务端代列）
+  if (url.pathname === '/api/list') {
+    const acct = url.searchParams.get('acct') || ''
+    const p = decodeURIComponent(url.searchParams.get('path') || '/')
+    try {
+      const items = await listDir(getClient(acct), p)
+      return sendJson(res, 200, items)
+    } catch (e) {
+      return sendJson(res, 500, { error: String(e?.message || e) })
+    }
+  }
+  // /api/search —— 在当前目录及子目录递归搜索（默认深度 3）
+  if (url.pathname === '/api/search') {
+    const acct = url.searchParams.get('acct') || ''
+    const p = decodeURIComponent(url.searchParams.get('path') || '/')
+    const kw = (url.searchParams.get('kw') || '').toLowerCase()
+    if (!kw) return sendJson(res, 200, [])
+    try {
+      const out = []
+      await walkDirs(getClient(acct), p, 0, MAX_SEARCH_DEPTH, async (item, dir) => {
+        if (item.name.toLowerCase().includes(kw)) out.push(item)
+        return true
+      })
+      return sendJson(res, 200, out.filter((i) => !i.isDir))
+    } catch (e) {
+      return sendJson(res, 500, { error: String(e?.message || e) })
+    }
+  }
+  // /api/collect —— 递归收集目录下全部音频（导入歌单用）
+  if (url.pathname === '/api/collect') {
+    const acct = url.searchParams.get('acct') || ''
+    const p = decodeURIComponent(url.searchParams.get('path') || '/')
+    try {
+      const out = []
+      await walkDirs(getClient(acct), p, 0, MAX_COLLECT_DEPTH, async (item) => {
+        if (!item.isDir && isAudioFile(item.name)) {
+          out.push(item)
+          return false
+        }
+        return true
+      })
+      return sendJson(res, 200, out)
+    } catch (e) {
+      return sendJson(res, 500, { error: String(e?.message || e) })
+    }
+  }
   if (url.pathname === '/api/accounts' && req.method === 'POST') {
     const body = await readBody(req)
     const acc = body && body.id ? body : null
@@ -459,58 +307,6 @@ async function handleApi(req, res, url) {
     deleteAccount(id)
     clientCache.delete(id)
     return sendJson(res, 200, { ok: true })
-  }
-  // /api/lyrics-online —— 服务端代理获取在线歌词（绕开浏览器 CORS）
-  if (url.pathname === '/api/lyrics-online' && req.method === 'GET') {
-    const artist = url.searchParams.get('artist') || ''
-    const title = url.searchParams.get('title') || ''
-    const lrc = await onlineLyricsServer(artist, title)
-    return sendJson(res, 200, { lyrics: lrc || '' })
-  }
-  // /api/meta-info —— 服务端代理获取歌手简介 / 专辑信息（网易云无 CORS 头，必须服务端抓）
-  if (url.pathname === '/api/meta-info' && req.method === 'GET') {
-    const artist = url.searchParams.get('artist') || ''
-    const album = url.searchParams.get('album') || ''
-    const title = url.searchParams.get('title') || ''
-    try {
-      const info = await metaInfoServer(artist, album, title)
-      return sendJson(res, 200, info || {})
-    } catch (e) {
-      return sendJson(res, 200, {})
-    }
-  }
-  // /api/store —— 通用键值存储（歌单/收藏/设置 等用户数据，服务端持久化到 /data/store.json）
-  if (url.pathname === '/api/store' && req.method === 'GET') {
-    const key = url.searchParams.get('key') || ''
-    return sendJson(res, 200, { value: getKV(key) })
-  }
-  if (url.pathname === '/api/store' && req.method === 'POST') {
-    const body = await readBody(req)
-    if (!body || !body.key) return sendJson(res, 400, { error: 'key required' })
-    setKV(body.key, body.value)
-    return sendJson(res, 200, { ok: true })
-  }
-  // /api/list —— 服务端代理列目录（后端用服务端凭据连 WebDAV，彻底绕开浏览器 CORS）
-  if (url.pathname === '/api/list') {
-    const acct = url.searchParams.get('acct') || ''
-    const p = decodeURIComponent(url.searchParams.get('path') || '/')
-    try {
-      const client = getClient(acct)
-      const items = await client.getDirectoryContents(p, { includeSelf: false })
-      const arr = Array.isArray(items) ? items : (items?.data || [])
-      const out = arr
-        .map((it) => ({
-          name: it.basename,
-          path: it.filename,
-          isDir: it.type === 'directory',
-          size: it.size || 0,
-          lastmod: it.lastmod || ''
-        }))
-        .sort((a, b) => (a.isDir === b.isDir ? a.name.localeCompare(b.name, 'zh') : a.isDir ? -1 : 1))
-      return sendJson(res, 200, { items: out })
-    } catch (e) {
-      return sendJson(res, 500, { error: String(e?.message || e) })
-    }
   }
   // /api/tags
   if (url.pathname === '/api/tags') {
@@ -571,10 +367,10 @@ function checkBasicAuth(req, res) {
   if (!TJ_USER) return true
   const auth = req.headers['authorization'] || ''
   const m = /^Basic\s+(.+)$/i.exec(auth)
-  if (!m) { res.writeHead(401, { 'WWW-Authenticate': 'Basic realm="OpMusic"' }); res.end('Unauthorized'); return false }
+  if (!m) { res.writeHead(401, { 'WWW-Authenticate': 'Basic realm="Tianjian Music"' }); res.end('Unauthorized'); return false }
   const [u, p] = Buffer.from(m[1], 'base64').toString().split(':')
   if (u === TJ_USER && p === TJ_PASSWORD) return true
-  res.writeHead(401, { 'WWW-Authenticate': 'Basic realm="OpMusic"' }); res.end('Unauthorized'); return false
+  res.writeHead(401, { 'WWW-Authenticate': 'Basic realm="Tianjian Music"' }); res.end('Unauthorized'); return false
 }
 
 // ---- 主服务器 ----
@@ -605,37 +401,22 @@ const server = http.createServer(async (req, res) => {
         const range = parseRange(req)
         res.setHeader('Accept-Ranges', 'bytes')
         res.setHeader('Content-Type', contentType(p))
-        // 流式转发：直接把 WebDAV 响应体 pipe 给浏览器，边下边播，支持 Range 续传
-        const rHeader = range ? `bytes=${range.start}-${range.end ?? ''}` : undefined
-        const resp = await client.customRequest(p, { method: 'GET', headers: rHeader ? { Range: rHeader } : {} })
-        const status = resp.status || (rHeader ? 206 : 200)
-        const cr = resp.headers?.get?.('content-range')
-        const cl = resp.headers?.get?.('content-length')
-        res.statusCode = status
-        if (status === 206) {
-          if (cr) res.setHeader('Content-Range', cr)
-          else if (total) {
-            const end = range && range.end != null ? range.end : total - 1
-            res.setHeader('Content-Range', `bytes ${range ? range.start : 0}-${end}/${total}`)
-          }
-          if (cl) res.setHeader('Content-Length', cl)
-          else if (total) {
-            const end = range && range.end != null ? range.end : total - 1
-            res.setHeader('Content-Length', String(end - (range ? range.start : 0) + 1))
-          }
-        } else if (cl) {
-          res.setHeader('Content-Length', cl)
-        } else if (total) {
-          res.setHeader('Content-Length', String(total))
+        if (range) {
+          const rHeader = `bytes=${range.start}-${range.end ?? ''}`
+          const r = await fetchBytes(client, p, rHeader)
+          const end = range.end ?? (r.contentLength ? range.start + r.contentLength - 1 : total - 1)
+          res.statusCode = r.status
+          if (r.contentRange) res.setHeader('Content-Range', r.contentRange)
+          else if (total) res.setHeader('Content-Range', `bytes ${range.start}-${end}/${total}`)
+          res.setHeader('Content-Length', String(r.contentLength ?? (total ? end - range.start + 1 : r.buf.length)))
+          return res.end(r.buf)
+        } else {
+          const r = await fetchBytes(client, p)
+          res.statusCode = r.status
+          if (r.contentLength) res.setHeader('Content-Length', String(r.contentLength))
+          else if (total) res.setHeader('Content-Length', String(total))
+          return res.end(r.buf)
         }
-        const upstream = resp.body
-        if (upstream && typeof upstream.pipe === 'function') {
-          upstream.on('error', () => { try { res.destroy() } catch {} })
-          res.on('close', () => { try { upstream.destroy() } catch {} })
-          return upstream.pipe(res)
-        }
-        // 兜底：极少数环境 body 非流，回退整读
-        try { return res.end(Buffer.from(await resp.arrayBuffer())) } catch { return res.end() }
       }
 
       if (url.pathname === '/cover') {
@@ -685,7 +466,7 @@ const server = http.createServer(async (req, res) => {
 })
 
 server.listen(PORT, () => {
-  console.log(`OpMusic Web 服务已启动: http://0.0.0.0:${PORT}`)
+  console.log(`天剑音乐播放器 Web 服务已启动: http://0.0.0.0:${PORT}`)
   if (!FFMPEG_OK) console.log('提示: 未检测到 ffmpeg/ffprobe，WMA/APE 将无法转码，内嵌标签/时长读取也将不可用。')
   if (TJ_USER) console.log('已启用 Basic Auth 鉴权。')
 })

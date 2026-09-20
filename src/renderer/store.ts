@@ -73,6 +73,9 @@ const defaultSettings: Settings = {
   playMode: 'order',
   volume: 0.8,
   eq: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+  // 点歌后是否自动进入全屏播放页。
+  // 桌面端默认关（底部播放条已够用）；手机端由 App 在初始化时改写为 true，
+  // 因为手机上没有常驻播放条，用户点歌的预期就是直接进入播放页。
   autoFullscreen: false
 }
 
@@ -81,7 +84,6 @@ interface State {
   activeAccount: string | null
   currentDir: string
   files: FileItem[]
-  loading: boolean
   queue: QueueTrack[]
   currentIndex: number
   isPlaying: boolean
@@ -144,13 +146,15 @@ interface State {
   loadLyrics: (acct: string, path: string) => Promise<void>
   setLyric: (text: string) => void
   toggle: (k: 'showLyrics' | 'showEq' | 'showSettings' | 'showPlaylist' | 'desktopLyric' | 'showInfo') => void
+  closeAllPanels: () => void
   setShowNowPlaying: (v: boolean) => void
   seek: (v: number) => void
   copyTrackTo: (plId: string, path: string, targetId: string) => void
   moveTrackTo: (plId: string, path: string, targetId: string) => void
   setEq: (eq: number[]) => void
+  patchSettings: (p: Partial<Settings>) => void
   fetchTrackInfo: (artist: string, album: string, title?: string, force?: boolean) => Promise<void>
-  fetchOnlineLyrics: (silent?: boolean) => Promise<void>
+  fetchOnlineLyrics: () => Promise<void>
   resolveMeta: (acct: string, path: string, force?: boolean) => Promise<{ artist?: string; album?: string; title?: string; year?: string; duration?: number }>
 }
 
@@ -186,7 +190,6 @@ export const useStore = create<State>((set, get) => ({
   activeAccount: null,
   currentDir: '',
   files: [],
-  loading: false,
   queue: [],
   currentIndex: -1,
   isPlaying: false,
@@ -198,7 +201,9 @@ export const useStore = create<State>((set, get) => ({
   searchResults: null,
   lyrics: [],
   currentLyric: '',
-  showLyrics: true,
+  // 默认不展开歌词面板：桌面端右列本就宽裕，但手机端面板是底部抽屉，
+  // 启动即展开会直接盖住主界面（实测问题），故统一改为默认收起。
+  showLyrics: false,
   showEq: false,
   showSettings: false,
   showPlaylist: false,
@@ -214,7 +219,17 @@ export const useStore = create<State>((set, get) => ({
 
   loadAccounts: async () => {
     const accounts = await api.accounts.list()
-    set({ accounts })
+    // 启动时若还没有活动账号，自动选中第一个并打开根目录。
+    // 否则「音乐库」会停留在「已连接但未选择账号」的空态，需要用户手动点一次。
+    const cur = get().activeAccount
+    const next = cur && accounts.some((a) => a.id === cur) ? cur : accounts[0]?.id ?? null
+    set({ accounts, activeAccount: next })
+    if (next && !cur) {
+      // 首次进入自动展开根目录（失败不阻塞启动，仍可手动浏览）
+      get()
+        .openDir(next, '/')
+        .catch(() => {})
+    }
     const savedRaw: any = (await api.store.get('settings')) || {}
     // 兼容旧版：theme(dark/light) -> skin
     if (savedRaw.theme && !savedRaw.skin) {
@@ -225,17 +240,11 @@ export const useStore = create<State>((set, get) => ({
     // 缓存版本不符（解析逻辑变过）→ 丢弃旧 trackMeta，重新解析，避免旧错误结果留存
     const tmetaVer = await api.store.get('trackMetaVer')
     const tmeta = tmetaVer === TRACKMETA_VER ? (await api.store.get('trackMeta')) || {} : {}
-    // 恢复上次所在网盘与目录（仅当该账号仍存在），避免每次刷新都退回「账号管理」页，造成「数据没了」的错觉
-    const savedActive = await api.store.get('activeAccount')
-    const savedDir = await api.store.get('currentDir')
-    const activeAccount = accounts.some((a) => a.id === savedActive) ? savedActive : null
     set({
       settings: { ...defaultSettings, ...savedRaw },
       favorites: fav || [],
       playlists: pls || [],
-      trackMeta: tmeta,
-      activeAccount,
-      currentDir: activeAccount ? savedDir || '/' : '/'
+      trackMeta: tmeta
     })
   },
   addAccount: async (acc) => {
@@ -245,20 +254,10 @@ export const useStore = create<State>((set, get) => ({
   removeAccount: async (id) => {
     await api.accounts.delete(id)
     await get().loadAccounts()
-    // 删掉的是当前正在用的账号时，清空 activeAccount，否则 FileBrowser 会拿着已删除的 id 去列目录报错
-    if (get().activeAccount === id) {
-      set({ activeAccount: '', currentDir: '/', files: [], searchResults: null })
-    }
   },
   openDir: async (acct, dir) => {
-    set({ loading: true, searchResults: null })
-    try {
-      const files = await api.files.list(acct, dir)
-      set({ activeAccount: acct, currentDir: dir, files, loading: false })
-    } catch (e: any) {
-      set({ files: [], loading: false })
-      get().setToast(`无法打开目录「${dir}」：${e?.message || '连接失败，请检查网盘地址/账号'}`)
-    }
+    const files = await api.files.list(acct, dir)
+    set({ activeAccount: acct, currentDir: dir, files, searchResults: null })
   },
   playFile: async (file, acct) => {
     if (!isPlayable(file.name)) {
@@ -568,16 +567,11 @@ export const useStore = create<State>((set, get) => ({
   doSearch: async (kw) => {
     const { activeAccount, currentDir } = get()
     if (!activeAccount || !kw.trim()) {
-      set({ searchResults: null, loading: false })
+      set({ searchResults: null })
       return
     }
-    set({ loading: true })
-    try {
-      const res = await api.files.search(activeAccount, currentDir || '/', kw.trim())
-      set({ searchResults: res, loading: false })
-    } catch {
-      set({ searchResults: [], loading: false })
-    }
+    const res = await api.files.search(activeAccount, currentDir || '/', kw.trim())
+    set({ searchResults: res })
   },
   clearSearch: () => set({ searchResults: null }),
   loadLyrics: async (acct, path) => {
@@ -762,8 +756,22 @@ export const useStore = create<State>((set, get) => ({
       }
       return { [k]: !(st as any)[k] } as any
     }),
+  // 关闭全部侧边面板（手机端点击抽屉遮罩时调用）
+  closeAllPanels: () =>
+    set({
+      showLyrics: false,
+      showPlaylist: false,
+      showInfo: false,
+      showEq: false,
+      showSettings: false
+    }),
   setEq: (eq) => {
     set({ settings: { ...get().settings, eq } })
+    get().saveSettings()
+  },
+  // 局部更新设置并落盘（皮肤/背景/开关等共用）
+  patchSettings: (p) => {
+    set({ settings: { ...get().settings, ...p } })
     get().saveSettings()
   }
 }))
@@ -783,13 +791,17 @@ useStore.subscribe((state) => {
       api.store.set('settings', state.settings)
       api.store.set('trackMeta', state.trackMeta)
       api.store.set('trackMetaVer', TRACKMETA_VER)
-      api.store.set('activeAccount', state.activeAccount)
-      api.store.set('currentDir', state.currentDir)
     } catch {
       /* 忽略写入异常 */
     }
   }, 500)
 })
+
+// 调试便利：把 store 挂到 window，便于在浏览器控制台/自动化测试里直接驱动状态
+// （如 __tj.getState().playFile(...)、__tj.getState().setShowNowPlaying(true)）。
+if (typeof window !== 'undefined') {
+  ;(window as any).__tj = useStore
+}
 
 // 关闭前再强制落盘一次，确保最后的播放进度不丢
 if (typeof window !== 'undefined') {

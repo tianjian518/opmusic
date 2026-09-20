@@ -1,6 +1,6 @@
-# OpMusic · Docker / 自托管 Web 版
+# 天剑音乐播放器 · Docker / 自托管 Web 版
 
-把 **OpMusic（原 Electron 桌面播放器）** 改造成可在浏览器访问的**自托管 Web 服务**：
+把原本的 **Electron 桌面播放器**改造成可在浏览器访问的**自托管 Web 服务**：
 前端是编译后的静态页面，后端是一个独立的 Node 服务，负责代理 WebDAV（绕开浏览器 CORS）、
 流媒体 Range 续传、封面/歌词获取、以及 WMA/APE 的 ffmpeg 实时转码。适合部署到服务器或 NAS，
 用浏览器（手机/电脑）访问，也能分享给同网络的人用。
@@ -24,21 +24,21 @@
 ## 构建镜像
 ```bash
 # 在能联网、装了 Docker 的机器上
-docker build -t tianjian518/opmusic:latest .
+docker build -t <你的DockerHub用户名>/tianjian-music:latest .
 ```
 > 镜像架构 = 构建机架构（amd64 / arm64）。如需多架构，用 `docker buildx build --platform linux/amd64,linux/arm64`。
 
 ## 推送到 Docker Hub
 ```bash
 docker login
-docker push tianjian518/opmusic:latest
+docker push <你的DockerHub用户名>/tianjian-music:latest
 ```
 
 ## 运行
 ```bash
 # 最简：数据存到当前目录 ./data
-docker run -d --name opmusic -p 8080:8080 -v "$PWD/data:/data" \
-  tianjian518/opmusic:latest
+docker run -d --name tianjian-music -p 8080:8080 -v "$PWD/data:/data" \
+  <你的DockerHub用户名>/tianjian-music:latest
 
 # 用 docker-compose（已内置）
 docker compose up -d
@@ -50,7 +50,7 @@ docker compose up -d
   ```bash
   docker run -d -p 8080:8080 -v "$PWD/data:/data" \
     -e TJ_USER=admin -e TJ_PASSWORD=你的强密码 \
-    tianjian518/opmusic:latest
+    <你的DockerHub用户名>/tianjian-music:latest
   ```
 - 在反向代理（Nginx/Caddy）后加 HTTPS；不要把 8080 直接暴露在公网且无鉴权。
 - `/data/accounts.json` 里是**明文** WebDAV 密码，保护好这个卷的权限。

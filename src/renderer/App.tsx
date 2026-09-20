@@ -1,6 +1,7 @@
-import { useEffect, useState, type CSSProperties } from 'react'
+import { useEffect, useMemo, useState, type CSSProperties } from 'react'
 import { useStore, orderedTracks, type TrackSort, type PlaylistSort } from './store'
 import { api, isAudioName, parseMeta } from './api'
+import { isMobileApp } from './device'
 import Connections from './components/Connections'
 import FileBrowser from './components/FileBrowser'
 import PlayerBar from './components/PlayerBar'
@@ -10,35 +11,85 @@ import SettingsPanel from './components/SettingsPanel'
 import PlaylistPanel from './components/PlaylistPanel'
 import InfoPanel from './components/InfoPanel'
 import NowPlaying from './components/NowPlaying'
-import LyricTicker from './components/LyricTicker'
+import { MobileTopBar, MobileBottomBar, type MobileTab } from './components/MobileShell'
+import MobileNowPlaying from './components/MobileNowPlaying'
+import MobileMore from './components/MobileMore'
+import MobileContent from './components/MobileContent'
+import {
+  IconLibrary,
+  IconHeart,
+  IconList,
+  IconDisc,
+  IconLyrics,
+  IconSliders,
+  IconSettings,
+  IconMusic,
+  IconFolder,
+  IconPlay,
+  IconShuffle,
+  IconPlus,
+  IconSearch,
+  IconClose,
+  IconExpand,
+  IconMonitor,
+  IconInfo,
+  IconDrag,
+  IconChevronRight,
+  IconTrash,
+  IconHeartFilled
+} from './components/Icons'
 
-type View = 'library' | 'favorites' | 'playlists'
-
-// 窄屏（手机）检测：命中时在根容器加 .mobile 类，触发手机版布局；桌面版完全不受影响。
-function useIsMobile(): boolean {
-  const [m, setM] = useState(() =>
-    typeof window !== 'undefined' && window.matchMedia('(max-width: 820px)').matches
-  )
-  useEffect(() => {
-    const mq = window.matchMedia('(max-width: 820px)')
-    const handler = () => setM(mq.matches)
-    mq.addEventListener('change', handler)
-    return () => mq.removeEventListener('change', handler)
-  }, [])
-  return m
-}
+export type View = 'library' | 'favorites' | 'playlists' | 'queue'
 
 export default function App() {
   const { loadAccounts, restorePlayback, settings, toggle, toast, showNowPlaying, setShowNowPlaying } = useStore()
   const [view, setView] = useState<View>('library')
-  const [mtab, setMtab] = useState<'library' | 'mine' | 'settings'>('library')
-  const isMobile = useIsMobile()
+  const [mobileTab, setMobileTab] = useState<MobileTab>('library')
+  const [mobileSearch, setMobileSearch] = useState(false)
+  const [mobile, setMobile] = useState(() => isMobileApp())
   const s = useStore()
+  // 手机端是否处于「搜索结果」状态（用于显示返回按钮）
+  const showSearch = !!s.searchResults
   const withSide = s.showLyrics || s.showPlaylist || s.showInfo || s.showEq || s.showSettings
 
   useEffect(() => {
     loadAccounts().then(() => restorePlayback())
   }, [])
+
+  // 设备形态跟随视口变化（手机横竖屏切换、桌面窗口缩放）
+  useEffect(() => {
+    const onResize = () => setMobile(isMobileApp())
+    window.addEventListener('resize', onResize)
+    window.addEventListener('orientationchange', onResize)
+    return () => {
+      window.removeEventListener('resize', onResize)
+      window.removeEventListener('orientationchange', onResize)
+    }
+  }, [])
+
+  // 手机端：把 <html> 挂上 .mobile，样式与安全区变量一并生效
+  useEffect(() => {
+    const root = document.documentElement
+    root.classList.toggle('mobile', mobile)
+    // 手机上没有常驻播放条，点歌的预期就是直接进入全屏播放页。
+    // 仅在用户从未手动改过该设置时套用（用户显式关掉过就不覆盖）。
+    if (mobile) {
+      const cur = useStore.getState().settings.autoFullscreen
+      if (!cur) useStore.getState().patchSettings({ autoFullscreen: true })
+    }
+    // 安全区像素值注入 CSS 变量，供 calc() 使用
+    const probe = document.createElement('div')
+    probe.style.cssText =
+      'position:fixed;visibility:hidden;pointer-events:none;' +
+      'padding-top:env(safe-area-inset-top);padding-bottom:env(safe-area-inset-bottom);'
+    document.body.appendChild(probe)
+    const cs = getComputedStyle(probe)
+    root.style.setProperty('--sa-top', `${parseFloat(cs.paddingTop) || 0}px`)
+    root.style.setProperty('--sa-bottom', `${parseFloat(cs.paddingBottom) || 0}px`)
+    document.body.removeChild(probe)
+    // 手机浏览器地址栏会动态改变视口高度，用 dvh 变量兜底
+    root.style.setProperty('--vh', `${window.innerHeight * 0.01}px`)
+  }, [mobile])
 
   // 自检模式：?selftest=1 —— 自动连接本地测试 WebDAV 并播放第一首，结果由 PlayerBar 上报
   useEffect(() => {
@@ -57,6 +108,7 @@ export default function App() {
       }
     })()
   }, [])
+
   useEffect(() => {
     const root = document.documentElement
     root.dataset.skin = settings.skin
@@ -67,159 +119,269 @@ export default function App() {
 
   // 背景图层：优先背景图，其次渐变，否则透明（露出皮肤纯色）
   const bgStyle: CSSProperties = settings.bgImage
-    ? { backgroundImage: `url(${settings.bgImage})`, backgroundSize: 'cover', backgroundPosition: 'center', backgroundRepeat: 'no-repeat' }
+    ? { backgroundImage: `url(${settings.bgImage})`, backgroundSize: 'cover', backgroundPosition: 'center' }
     : settings.bgGradient
     ? { background: settings.bgGradient }
     : {}
 
-  if (isMobile) {
-    const hasLib = !!s.accounts.length && !!s.activeAccount
+  const favCount = s.favorites.length
+  const trackTotal = s.playlists.reduce((n, p) => n + p.tracks.length, 0)
+
+  const navItems: Array<{ key: View | 'np'; icon: JSX.Element; cls: string; label: string; count?: number; onClick: () => void }> = [
+    { key: 'library', icon: <IconLibrary size={13} />, cls: 'ic-red', label: '音乐库', onClick: () => setView('library') },
+    { key: 'favorites', icon: <IconHeart size={13} />, cls: 'ic-purple', label: '我的收藏', count: favCount || undefined, onClick: () => setView('favorites') },
+    { key: 'playlists', icon: <IconList size={13} />, cls: 'ic-blue', label: '歌单', count: trackTotal || undefined, onClick: () => setView('playlists') },
+    { key: 'np', icon: <IconDisc size={13} />, cls: 'ic-pink', label: '正在播放', onClick: () => setShowNowPlaying(true) }
+  ]
+
+  const sideItems: Array<{ key: 'showPlaylist' | 'showLyrics' | 'showEq' | 'showSettings'; icon: JSX.Element; label: string; on: boolean }> = [
+    { key: 'showPlaylist', icon: <IconMusic size={16} />, label: '播放队列', on: s.showPlaylist },
+    { key: 'showLyrics', icon: <IconLyrics size={16} />, label: '歌词', on: s.showLyrics },
+    { key: 'showEq', icon: <IconSliders size={16} />, label: '均衡器', on: s.showEq },
+    { key: 'showSettings', icon: <IconSettings size={16} />, label: '设置', on: s.showSettings }
+  ]
+
+  /* ==================== 手机端布局 ==================== */
+  if (mobile) {
+    // 「音乐库」内部有两态：未连接任何网盘时展示连接页，否则展示目录浏览
+    const needConnect = !s.activeAccount || !s.accounts.length
+    const mobileTitle = showSearch
+      ? '搜索结果'
+      : mobileTab === 'library'
+      ? needConnect
+        ? '连接网盘'
+        : s.currentDir === '/'
+        ? '音乐库'
+        : s.currentDir.split('/').filter(Boolean).pop() || '音乐库'
+      : mobileTab === 'favorites'
+      ? '我的收藏'
+      : mobileTab === 'playlists'
+      ? '歌单'
+      : '更多'
+
     return (
       <>
         <div className="app-bg" style={bgStyle} />
-        <div className="app mobile">
-          <header className="m-top">
-            <div className="m-brand">🎵 OpMusic</div>
-            <div className="m-spacer" />
-          </header>
+        <div className="app mobile-app">
+          {/* 顺序必须是：顶部栏 → 滚动内容 → 底部栏，否则内容会被挤到 Tab 栏下面 */}
+          <MobileTopBar
+            title={mobileTitle}
+            onSearch={mobileTab === 'library' && !needConnect ? () => setMobileSearch((v) => !v) : undefined}
+            onSettings={mobileTab !== 'more' ? () => toggle('showSettings') : undefined}
+            showBack={showSearch && mobileTab === 'library'}
+            onBack={() => {
+              useStore.getState().clearSearch()
+              setMobileSearch(false)
+            }}
+          />
 
-          <main className="m-main">
-            {mtab === 'library' && (hasLib ? <FileBrowser /> : <Connections />)}
-            {mtab === 'mine' && (
-              <div className="m-mine">
-                <FavoritesView />
-                <PlaylistsView />
+          <div className="top">
+            <div className="main">
+              <div className="m-content-wrap">
+                {(mobileTab === 'library' || mobileTab === 'favorites' || mobileTab === 'playlists') && (
+                  <MobileContent view={mobileTab} onSearchOpen={mobileSearch} />
+                )}
+                {mobileTab === 'more' && <MobileMore />}
               </div>
-            )}
-            {mtab === 'settings' && (
-              <>
-                <SettingsPanel />
-                <Connections />
-              </>
-            )}
-          </main>
+            </div>
+          </div>
 
-          {/* 手机版实时歌词滚动条：紧贴迷你播放条上方，常驻显示当前 2~3 行 */}
-          <LyricTicker />
-          {/* 复用同一个 PlayerBar（它持有唯一的 <audio>），在手机上被压成迷你条 */}
-          <PlayerBar />
+          <MobileBottomBar tab={mobileTab} onTab={setMobileTab} />
 
-          <nav className="m-tabbar">
-            <button className={mtab === 'library' ? 'active' : ''} onClick={() => setMtab('library')}>
-              音乐库
-            </button>
-            <button className={mtab === 'mine' ? 'active' : ''} onClick={() => setMtab('mine')}>
-              我的
-            </button>
-            <button className={showNowPlaying ? 'active' : ''} onClick={() => setShowNowPlaying(true)}>
-              播放中
-            </button>
-            <button className={mtab === 'settings' ? 'active' : ''} onClick={() => setMtab('settings')}>
-              设置
-            </button>
-          </nav>
+          {/* 侧边面板在手机端是底部抽屉 */}
+          {withSide && <div className="m-scrim" onClick={() => useStore.getState().closeAllPanels()} />}
+          {s.showPlaylist && <PlaylistPanel />}
+          {s.showLyrics && <LyricsPanel />}
+          {s.showInfo && <InfoPanel />}
+          {s.showEq && <EqPanel />}
+          {s.showSettings && <SettingsPanel />}
 
-          {showNowPlaying && <NowPlaying />}
+          {showNowPlaying && <MobileNowPlaying />}
+          {toast && <div className="toast">{toast}</div>}
         </div>
-        {toast && <div className="toast">{toast}</div>}
       </>
     )
   }
 
+  /* ==================== 桌面端布局 ==================== */
   return (
     <>
       <div className="app-bg" style={bgStyle} />
       <div className={`app${withSide ? ' with-side' : ''}`}>
-      <div className="top">
-      <aside className="sidebar">
-        <div className="brand">🎵 OpMusic</div>
-        <div className={`nav-item ${view === 'library' ? 'active' : ''}`} onClick={() => setView('library')}>
-          📁 音乐库
-        </div>
-        <div className={`nav-item ${view === 'favorites' ? 'active' : ''}`} onClick={() => setView('favorites')}>
-          ❤️ 我的收藏
-        </div>
-        <div className={`nav-item ${view === 'playlists' ? 'active' : ''}`} onClick={() => setView('playlists')}>
-          📃 歌单
-        </div>
-        <div
-          className={`nav-item ${showNowPlaying ? 'active' : ''}`}
-          onClick={() => setShowNowPlaying(true)}
-        >
-          🎴 正在播放
-        </div>
-        <div style={{ height: 18 }} />
-        <div className="nav-item" onClick={() => toggle('showPlaylist')}>
-          🎚️ 播放队列
-        </div>
-        <div className="nav-item" onClick={() => toggle('showLyrics')}>
-          📝 歌词
-        </div>
-        <div className="nav-item" onClick={() => toggle('showEq')}>
-          🎛️ 均衡器
-        </div>
-        <div className="nav-item" onClick={() => toggle('showSettings')}>
-          ⚙️ 设置
-        </div>
-      </aside>
+        <div className="top">
+          <aside className="sidebar">
+            <div className="sidebar-head">
+              <div className="brand">
+                <span className="brand-mark">
+                  <IconMusic size={14} />
+                </span>
+                <span className="brand-text">天剑音乐</span>
+              </div>
+            </div>
 
-      <main className="main">
-        {view === 'library' && (
-          <>
-            {!s.activeAccount || !s.accounts.length ? (
-              <Connections />
-            ) : (
-              <FileBrowser />
+            <div className="sidebar-scroll">
+              <div className="nav-section">资料库</div>
+              {navItems.map((it) => (
+                <div
+                  key={it.key}
+                  className={`nav-item ${
+                    it.key === 'np' ? (showNowPlaying ? 'active' : '') : view === it.key ? 'active' : ''
+                  }`}
+                  onClick={it.onClick}
+                >
+                  <span className={`nav-icon ${it.cls}`}>{it.icon}</span>
+                  <span className="nav-label">{it.label}</span>
+                  {it.count ? <span className="nav-count">{it.count}</span> : null}
+                </div>
+              ))}
+
+              <div className="nav-section">播放</div>
+              {sideItems.map((it) => (
+                <div
+                  key={it.key}
+                  className={`nav-item nav-plain ${it.on ? 'on' : ''}`}
+                  onClick={() => toggle(it.key)}
+                >
+                  <span className="nav-icon">{it.icon}</span>
+                  <span className="nav-label">{it.label}</span>
+                </div>
+              ))}
+            </div>
+
+            <div className="sidebar-foot">
+              <span className="dot" />
+              {s.queue.length ? `队列 ${s.currentIndex + 1}/${s.queue.length}` : '未在播放'}
+            </div>
+          </aside>
+
+          <main className="main">
+            {view === 'library' && (
+              <>
+                {!s.activeAccount || !s.accounts.length ? (
+                  <Connections />
+                ) : (
+                  <FileBrowser />
+                )}
+              </>
             )}
-          </>
-        )}
-        {view === 'favorites' && <FavoritesView />}
-        {view === 'playlists' && <PlaylistsView />}
-      </main>
+            {view === 'favorites' && <FavoritesView />}
+            {view === 'playlists' && <PlaylistsView />}
+          </main>
 
-      {s.showPlaylist && <PlaylistPanel />}
-      {s.showLyrics && <LyricsPanel />}
-      {s.showInfo && <InfoPanel />}
-      {s.showEq && <EqPanel />}
-      {s.showSettings && <SettingsPanel />}
-      </div>
+          {s.showPlaylist && <PlaylistPanel />}
+          {s.showLyrics && <LyricsPanel />}
+          {s.showInfo && <InfoPanel />}
+          {s.showEq && <EqPanel />}
+          {s.showSettings && <SettingsPanel />}
+        </div>
 
-      <PlayerBar />
+        <PlayerBar />
 
-      {s.showNowPlaying && <NowPlaying />}
+        {s.showNowPlaying && <NowPlaying />}
 
-      {toast && <div className="toast">{toast}</div>}
+        {toast && <div className="toast">{toast}</div>}
       </div>
     </>
   )
 }
 
+/* ============================ 我的收藏 ============================ */
+
 function FavoritesView() {
   const { favorites, playFile, toggleFavorite, addToQueue } = useStore()
-  if (!favorites.length) return <div className="hint">还没有收藏。在音乐库里点 ♥ 即可收藏。</div>
+  const [kw, setKw] = useState('')
+
+  const list = useMemo(() => {
+    const q = kw.trim().toLowerCase()
+    if (!q) return favorites
+    return favorites.filter((f) =>
+      `${f.name} ${f.artist || ''} ${f.album || ''}`.toLowerCase().includes(q)
+    )
+  }, [favorites, kw])
+
   return (
-    <div>
-      <h3>我的收藏（{favorites.length}）</h3>
-      <div className="list">
-        {favorites.map((f) => (
-          <div className="item" key={f.path}>
-            <span className="icon">🎵</span>
-            <span className="name" onClick={() => playFile({ name: f.name, path: f.path } as any, f.accountId)}>
-              {f.name}
-            </span>
-            <span className="meta">{f.artist || ''}</span>
-            <button className="ghost" onClick={() => addToQueue({ name: f.name, path: f.path } as any, f.accountId)}>
-              ＋
-            </button>
-            <button className="ghost" onClick={() => toggleFavorite(f)}>
-              💔
-            </button>
-          </div>
-        ))}
+    <>
+      <div className="toolbar">
+        <span className="toolbar-title">我的收藏</span>
+        <span className="muted" style={{ fontSize: 12 }}>
+          {favorites.length} 首
+        </span>
+        <span className="spacer" />
+        <div className="search-box">
+          <IconSearch size={16} />
+          <input placeholder="搜索收藏…" value={kw} onChange={(e) => setKw(e.target.value)} />
+        </div>
       </div>
-    </div>
+      <div className="main-body">
+        {!favorites.length ? (
+          <div className="empty">
+            <div className="empty-icon">
+              <IconHeart size={26} />
+            </div>
+            <div className="empty-title">还没有收藏的歌曲</div>
+            <div className="empty-desc">在音乐库里把鼠标移到歌曲上，点击心形按钮即可收藏。</div>
+          </div>
+        ) : (
+          <>
+            <div className="page-head">
+              <div>
+                <h1 className="page-title">我的收藏</h1>
+                <div className="page-sub">{favorites.length} 首歌曲</div>
+              </div>
+              <span className="spacer" />
+              <div className="page-actions">
+                <button
+                  className="play-all-btn"
+                  onClick={() => {
+                    const first = list[0]
+                    if (first) playFile({ name: first.name, path: first.path } as any, first.accountId)
+                  }}
+                >
+                  <IconPlay size={14} /> 播放
+                </button>
+              </div>
+            </div>
+
+            <div className="list">
+              {list.map((f, i) => (
+                <div className="item" key={f.path + i}>
+                  <span className="track-no">{i + 1}</span>
+                  <span className="icon">
+                    <IconMusic size={17} />
+                  </span>
+                  <span
+                    className="name"
+                    onClick={() => playFile({ name: f.name, path: f.path } as any, f.accountId)}
+                  >
+                    {f.name}
+                  </span>
+                  <span className="meta" style={{ width: 110, textAlign: 'right' }}>
+                    {f.artist || ''}
+                  </span>
+                  <div className="row-actions">
+                    <button
+                      className="mini"
+                      title="加入队列"
+                      onClick={() => addToQueue({ name: f.name, path: f.path } as any, f.accountId)}
+                    >
+                      <IconPlus size={16} />
+                    </button>
+                    <button className="mini" title="取消收藏" onClick={() => toggleFavorite(f)}>
+                      <IconHeartFilled size={16} style={{ color: 'var(--accent)' }} />
+                    </button>
+                  </div>
+                </div>
+              ))}
+              {list.length === 0 && <div className="hint">没有匹配的收藏。</div>}
+            </div>
+          </>
+        )}
+      </div>
+    </>
   )
 }
+
+/* ============================ 歌单 ============================ */
 
 function PlaylistsView() {
   const {
@@ -242,9 +404,9 @@ function PlaylistsView() {
   const [open, setOpen] = useState<Record<string, boolean>>({})
   const [dragPl, setDragPl] = useState<string | null>(null)
   const [dragTrack, setDragTrack] = useState<{ plId: string; path: string } | null>(null)
-  const [kw, setKw] = useState('') // 模糊搜索关键词
+  const [kw, setKw] = useState('')
   const [picker, setPicker] = useState<null | { mode: 'copy' | 'move'; plId: string; path: string }>(null)
-  const toggle = (id: string) => setOpen((o) => ({ ...o, [id]: !o[id] }))
+  const toggleOpen = (id: string) => setOpen((o) => ({ ...o, [id]: !o[id] }))
   const expandAll = () => setOpen(Object.fromEntries(playlists.map((p) => [p.id, true])))
   const collapseAll = () => setOpen({})
 
@@ -263,8 +425,7 @@ function PlaylistsView() {
       )
     : []
 
-  const openPicker = (mode: 'copy' | 'move', plId: string, path: string) =>
-    setPicker({ mode, plId, path })
+  const openPicker = (mode: 'copy' | 'move', plId: string, path: string) => setPicker({ mode, plId, path })
   const applyPicker = (targetId: string) => {
     if (!picker) return
     if (picker.mode === 'copy') copyTrackTo(picker.plId, picker.path, targetId)
@@ -272,196 +433,300 @@ function PlaylistsView() {
     setPicker(null)
   }
 
-  // 歌单列表排序
   const sortMode = settings.playlistSort
-  const ordered = sortMode === 'custom'
-    ? playlists
-    : [...playlists].sort((a, b) => {
-        if (sortMode === 'name') return a.name.localeCompare(b.name, 'zh')
-        if (sortMode === 'count') return b.tracks.length - a.tracks.length
-        if (sortMode === 'recent') return (b.updatedAt || 0) - (a.updatedAt || 0)
-        return 0
-      })
+  const ordered =
+    sortMode === 'custom'
+      ? playlists
+      : [...playlists].sort((a, b) => {
+          if (sortMode === 'name') return a.name.localeCompare(b.name, 'zh')
+          if (sortMode === 'count') return b.tracks.length - a.tracks.length
+          if (sortMode === 'recent') return (b.updatedAt || 0) - (a.updatedAt || 0)
+          return 0
+        })
+
+  const totalTracks = playlists.reduce((n, p) => n + p.tracks.length, 0)
 
   return (
-    <div className="playlists-view">
+    <>
       <div className="toolbar">
-        <input placeholder="新歌单名称" value={name} onChange={(e) => setName(e.target.value)} />
-        <button className="primary" onClick={() => name && (createPlaylist(name), setName(''))}>
-          新建歌单
-        </button>
+        <span className="toolbar-title">歌单</span>
+        <span className="muted" style={{ fontSize: 12 }}>
+          {playlists.length} 个 · {totalTracks} 首
+        </span>
         <span className="spacer" />
-        <input
-          className="search"
-          placeholder="🔍 搜索歌单里的歌曲…"
-          value={kw}
-          onChange={(e) => setKw(e.target.value)}
-          style={{ width: 230 }}
-        />
-        {q && (
-          <button className="ghost" onClick={() => setKw('')} title="清除搜索">
-            ✕
-          </button>
-        )}
-        <span className="muted">排序</span>
-        <select value={sortMode} onChange={(e) => setPlaylistSort(e.target.value as PlaylistSort)}>
+        <div className="search-box">
+          <IconSearch size={16} />
+          <input
+            placeholder="搜索歌单里的歌曲…"
+            value={kw}
+            onChange={(e) => setKw(e.target.value)}
+          />
+          {kw && (
+            <button className="mini" style={{ width: 20, height: 20 }} onClick={() => setKw('')} title="清除">
+              <IconClose size={13} />
+            </button>
+          )}
+        </div>
+        <select value={sortMode} onChange={(e) => setPlaylistSort(e.target.value as PlaylistSort)} title="歌单排序">
           <option value="custom">自定义拖拽</option>
           <option value="name">名称</option>
           <option value="count">歌曲数</option>
           <option value="recent">最近更新</option>
         </select>
-        <button className="ghost" onClick={expandAll}>展开全部</button>
-        <button className="ghost" onClick={collapseAll}>折叠全部</button>
+        <button className="icon-btn" onClick={expandAll} title="展开全部">
+          <IconChevronRight size={16} />
+        </button>
+        <button className="icon-btn" onClick={collapseAll} title="折叠全部">
+          <IconChevronRight size={16} style={{ transform: 'rotate(90deg)' }} />
+        </button>
       </div>
 
-      {/* 全部歌单：顺序 / 随机 一键播放 */}
-      {!q && (
-        <div className="row" style={{ margin: '10px 0 4px', gap: 8 }}>
-          <button className="primary" onClick={() => playAllPlaylists(false)}>▶ 播放全部歌单</button>
-          <button className="primary" onClick={() => playAllPlaylists(true)}>🔀 随机播放全部歌单</button>
-          <span className="muted">
-            共 {playlists.reduce((n, p) => n + p.tracks.length, 0)} 首（去重后）
-          </span>
-        </div>
-      )}
-
-      <div className="playlists-body">
-      {/* 模糊搜索结果 */}
-      {q && (
-        <div>
-          <h3>搜索结果（{results.length}）</h3>
-          {results.length === 0 && <div className="hint">没有匹配的歌曲。</div>}
-          {results.map((r) => (
-            <div className="item" key={r.plId + r.track.path}>
-              <span className="icon">🎵</span>
-              <span className="name" onClick={() => playFile({ name: r.track.name, path: r.track.path } as any, r.track.accountId)}>
-                {r.track.name}
-              </span>
-              <span className="meta">{r.plName}</span>
-              <button className="ghost" onClick={() => openPicker('copy', r.plId, r.track.path)}>复制</button>
-              <button className="ghost" onClick={() => openPicker('move', r.plId, r.track.path)}>移动</button>
-              <button className="ghost" onClick={() => removeFromPlaylist(r.plId, r.track.path)}>移出</button>
-            </div>
-          ))}
-        </div>
-      )}
-
-      {!playlists.length && !q && (
-        <div className="hint">
-          还没有歌单。在音乐库里：点歌曲的 📋 加入歌单；或点文件夹的「导入歌单」把整张专辑/整个歌手目录一键导入。
-        </div>
-      )}
-
-      {/* 常规歌单列表（搜索时隐藏，避免与结果重复），响应式网格铺满宽度 */}
-      {!q && (
-        <div className="playlist-grid">
-        {ordered.map((p) => {
-          const expanded = !!open[p.id]
-          const tracks = orderedTracks(p)
-          return (
-            <div
-              className={`card${expanded ? ' expanded' : ''}`}
-              key={p.id}
-              draggable
-              onDragStart={(e) => {
-                const t = e.target as HTMLElement
-                if (t.closest('.item')) return // 歌曲拖拽交给子项处理
-                if (t.closest('button, input, select')) {
-                  e.preventDefault()
-                  return
-                }
-                setDragPl(p.id)
-                e.dataTransfer.effectAllowed = 'move'
-              }}
-              onDragOver={(e) => e.preventDefault()}
-              onDrop={(e) => {
-                e.preventDefault()
-                if (dragTrack) return // 正在拖歌曲
-                if (dragPl && dragPl !== p.id) movePlaylist(dragPl, p.id)
-                setDragPl(null)
-              }}
-            >
-              <div className="row playlist-head" style={{ cursor: 'grab' }} onClick={() => toggle(p.id)}>
-                <span className="drag-handle">⠿</span>
-                <span className="caret">{expanded ? '▾' : '▸'}</span>
-                <b>{p.name}</b>
-                <span className="muted">（{p.tracks.length} 首）</span>
-                <span className="spacer" />
-                <button
-                  className="primary"
-                  onClick={(e) => {
-                    e.stopPropagation()
-                    playPlaylist(p.id)
-                  }}
-                >
-                  ▶ 播放
-                </button>
-                <button
-                  className="ghost"
-                  onClick={(e) => {
-                    e.stopPropagation()
-                    removePlaylist(p.id)
-                  }}
-                >
-                  删除
-                </button>
+      <div className="main-body">
+        {/* 搜索结果 */}
+        {q ? (
+          <>
+            <div className="page-head">
+              <div>
+                <h1 className="page-title">搜索结果</h1>
+                <div className="page-sub">「{kw}」匹配到 {results.length} 首</div>
               </div>
-              {expanded && (
-                <div style={{ marginTop: 8 }}>
-                  <div className="row" style={{ marginBottom: 6, gap: 8 }}>
-                    <span className="muted">歌曲排序</span>
-                    <select
-                      value={p.trackSort || 'added'}
-                      onChange={(e) => setTrackSort(p.id, e.target.value as TrackSort)}
-                      style={{ flex: 1 }}
-                      onClick={(e) => e.stopPropagation()}
+            </div>
+            {results.length === 0 ? (
+              <div className="hint">没有匹配的歌曲。</div>
+            ) : (
+              <div className="list">
+                {results.map((r) => (
+                  <div className="item" key={r.plId + r.track.path}>
+                    <span className="icon">
+                      <IconMusic size={17} />
+                    </span>
+                    <span
+                      className="name"
+                      onClick={() =>
+                        playFile({ name: r.track.name, path: r.track.path } as any, r.track.accountId)
+                      }
                     >
-                      <option value="added">添加顺序</option>
-                      <option value="name">曲名</option>
-                      <option value="artist">歌手</option>
-                      <option value="album">专辑</option>
-                      <option value="custom">自定义拖拽</option>
-                    </select>
+                      {r.track.name}
+                    </span>
+                    <span className="meta" style={{ width: 130, textAlign: 'right' }}>
+                      {r.plName}
+                    </span>
+                    <div className="row-actions">
+                      <button className="mini" title="复制到其他歌单" onClick={() => openPicker('copy', r.plId, r.track.path)}>
+                        <IconPlus size={16} />
+                      </button>
+                      <button className="mini" title="移动到其他歌单" onClick={() => openPicker('move', r.plId, r.track.path)}>
+                        <IconChevronRight size={16} />
+                      </button>
+                      <button className="mini" title="从歌单移出" onClick={() => removeFromPlaylist(r.plId, r.track.path)}>
+                        <IconTrash size={15} />
+                      </button>
+                    </div>
                   </div>
-                  {tracks.map((t) => (
+                ))}
+              </div>
+            )}
+          </>
+        ) : (
+          <>
+            <div className="page-head">
+              <div>
+                <h1 className="page-title">歌单</h1>
+                <div className="page-sub">
+                  {playlists.length} 个歌单 · 共 {totalTracks} 首（去重后可整体播放）
+                </div>
+              </div>
+              <span className="spacer" />
+              <div className="page-actions">
+                <div className="search-box" style={{ minWidth: 170 }}>
+                  <input
+                    placeholder="新歌单名称"
+                    value={name}
+                    onChange={(e) => setName(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' && name) {
+                        createPlaylist(name)
+                        setName('')
+                      }
+                    }}
+                  />
+                </div>
+                <button
+                  className="play-all-btn ghost"
+                  onClick={() => {
+                    if (name) {
+                      createPlaylist(name)
+                      setName('')
+                    }
+                  }}
+                >
+                  <IconPlus size={15} /> 新建歌单
+                </button>
+                {totalTracks > 0 && (
+                  <>
+                    <button className="play-all-btn" onClick={() => playAllPlaylists(false)}>
+                      <IconPlay size={14} /> 播放全部
+                    </button>
+                    <button className="play-all-btn ghost" onClick={() => playAllPlaylists(true)}>
+                      <IconShuffle size={15} /> 随机
+                    </button>
+                  </>
+                )}
+              </div>
+            </div>
+
+            {!playlists.length ? (
+              <div className="empty">
+                <div className="empty-icon">
+                  <IconList size={26} />
+                </div>
+                <div className="empty-title">还没有歌单</div>
+                <div className="empty-desc">
+                  在音乐库里点歌曲行的「＋」把歌加入歌单；或点文件夹的「导入歌单」把整张专辑 / 整个歌手目录一键导入。
+                </div>
+              </div>
+            ) : (
+              <div className="playlist-grid">
+                {ordered.map((p) => {
+                  const expanded = !!open[p.id]
+                  const tracks = orderedTracks(p)
+                  return (
                     <div
-                      className="item"
-                      key={t.path}
+                      className={`card${expanded ? ' expanded' : ''}`}
+                      key={p.id}
                       draggable
                       onDragStart={(e) => {
-                        if ((e.target as HTMLElement).closest('button')) {
+                        const t = e.target as HTMLElement
+                        if (t.closest('.item')) return
+                        if (t.closest('button, input, select')) {
                           e.preventDefault()
                           return
                         }
-                        setDragTrack({ plId: p.id, path: t.path })
+                        setDragPl(p.id)
                         e.dataTransfer.effectAllowed = 'move'
                       }}
                       onDragOver={(e) => e.preventDefault()}
                       onDrop={(e) => {
                         e.preventDefault()
-                        if (dragTrack && dragTrack.plId === p.id && dragTrack.path !== t.path) {
-                          moveTrack(p.id, dragTrack.path, t.path)
-                        }
-                        setDragTrack(null)
+                        if (dragTrack) return
+                        if (dragPl && dragPl !== p.id) movePlaylist(dragPl, p.id)
+                        setDragPl(null)
                       }}
+                      style={{ cursor: expanded ? 'default' : 'grab' }}
                     >
-                      <span className="drag-handle">⠿</span>
-                      <span className="icon">🎵</span>
-                      <span className="name" onClick={() => playFile({ name: t.name, path: t.path } as any, t.accountId)}>
-                        {t.name}
-                      </span>
-                      <button className="ghost" onClick={() => openPicker('copy', p.id, t.path)}>复制</button>
-                      <button className="ghost" onClick={() => openPicker('move', p.id, t.path)}>移动</button>
-                      <button className="ghost" onClick={() => removeFromPlaylist(p.id, t.path)}>移出</button>
+                      <div
+                        className="row"
+                        style={{ gap: 9, cursor: 'pointer' }}
+                        onClick={() => toggleOpen(p.id)}
+                      >
+                        <span className="drag-handle" onClick={(e) => e.stopPropagation()}>
+                          <IconDrag size={13} />
+                        </span>
+                        <span className={`caret ${expanded ? 'open' : ''}`}>
+                          <IconChevronRight size={14} />
+                        </span>
+                        <b style={{ fontSize: 14 }}>{p.name}</b>
+                        <span className="badge">{p.tracks.length}</span>
+                        <span className="spacer" />
+                        <button
+                          className="icon-btn"
+                          title="播放歌单"
+                          onClick={(e) => {
+                            e.stopPropagation()
+                            playPlaylist(p.id)
+                          }}
+                        >
+                          <IconPlay size={16} />
+                        </button>
+                        <button
+                          className="icon-btn"
+                          title="删除歌单"
+                          onClick={(e) => {
+                            e.stopPropagation()
+                            removePlaylist(p.id)
+                          }}
+                        >
+                          <IconTrash size={15} />
+                        </button>
+                      </div>
+
+                      {expanded && (
+                        <div style={{ marginTop: 10 }}>
+                          <div className="row" style={{ marginBottom: 8, gap: 8 }}>
+                            <span className="muted" style={{ fontSize: 12 }}>
+                              排序
+                            </span>
+                            <select
+                              value={p.trackSort || 'added'}
+                              onChange={(e) => setTrackSort(p.id, e.target.value as TrackSort)}
+                              style={{ flex: 1 }}
+                              onClick={(e) => e.stopPropagation()}
+                            >
+                              <option value="added">添加顺序</option>
+                              <option value="name">曲名</option>
+                              <option value="artist">歌手</option>
+                              <option value="album">专辑</option>
+                              <option value="custom">自定义拖拽</option>
+                            </select>
+                          </div>
+                          {tracks.map((t, ti) => (
+                            <div
+                              className="item"
+                              key={t.path}
+                              draggable
+                              onDragStart={(e) => {
+                                if ((e.target as HTMLElement).closest('button')) {
+                                  e.preventDefault()
+                                  return
+                                }
+                                setDragTrack({ plId: p.id, path: t.path })
+                                e.dataTransfer.effectAllowed = 'move'
+                              }}
+                              onDragOver={(e) => e.preventDefault()}
+                              onDrop={(e) => {
+                                e.preventDefault()
+                                if (dragTrack && dragTrack.plId === p.id && dragTrack.path !== t.path) {
+                                  moveTrack(p.id, dragTrack.path, t.path)
+                                }
+                                setDragTrack(null)
+                              }}
+                            >
+                              <span className="track-no">{ti + 1}</span>
+                              <span
+                                className="name"
+                                onClick={() =>
+                                  playFile({ name: t.name, path: t.path } as any, t.accountId)
+                                }
+                              >
+                                {t.name}
+                              </span>
+                              <div className="row-actions">
+                                <button className="mini" title="复制到其他歌单" onClick={() => openPicker('copy', p.id, t.path)}>
+                                  <IconPlus size={16} />
+                                </button>
+                                <button className="mini" title="移动到其他歌单" onClick={() => openPicker('move', p.id, t.path)}>
+                                  <IconChevronRight size={16} />
+                                </button>
+                                <button className="mini" title="移出歌单" onClick={() => removeFromPlaylist(p.id, t.path)}>
+                                  <IconTrash size={15} />
+                                </button>
+                              </div>
+                            </div>
+                          ))}
+                          {tracks.length === 0 && (
+                            <div className="muted" style={{ fontSize: 12, padding: '8px 6px' }}>
+                              这个歌单还没有歌曲。
+                            </div>
+                          )}
+                        </div>
+                      )}
                     </div>
-                  ))}
-                </div>
-              )}
-            </div>
-          )
-        })}
-        </div>
-      )}
+                  )
+                })}
+              </div>
+            )}
+          </>
+        )}
       </div>
 
       {/* 复制/移动 目标歌单选择弹窗 */}
@@ -477,14 +742,16 @@ function PlaylistsView() {
                 .filter((p) => p.id !== picker.plId)
                 .map((p) => (
                   <button key={p.id} className="picker-item" onClick={() => applyPicker(p.id)}>
-                    📃 {p.name}（{p.tracks.length}）
+                    <IconList size={15} /> {p.name}（{p.tracks.length}）
                   </button>
                 ))}
             </div>
-            <button className="ghost" onClick={() => setPicker(null)}>取消</button>
+            <button className="ghost" style={{ width: '100%' }} onClick={() => setPicker(null)}>
+              取消
+            </button>
           </div>
         </div>
       )}
-    </div>
+    </>
   )
 }

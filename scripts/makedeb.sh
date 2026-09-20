@@ -6,8 +6,8 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 SRC="$ROOT/release/linux-arm64-unpacked"
 OUT="$ROOT/release"
-APP_ID="opmusic"
-APP_NAME="OpMusic"
+APP_ID="tianjian-music"
+APP_NAME="天剑音乐播放器"
 VERSION="$(node -p "require('$ROOT/package.json').version")"
 DEB="$OUT/${APP_NAME}-${VERSION}-linux-arm64.deb"
 
@@ -19,15 +19,15 @@ fi
 STAGE="$(mktemp -d)"
 trap 'rm -rf "$STAGE"' EXIT
 
-# 应用文件 -> /opt/opmusic
+# 应用文件 -> /opt/tianjian-music
 mkdir -p "$STAGE/opt/$APP_ID"
 cp -a "$SRC/." "$STAGE/opt/$APP_ID/"
 
-# 启动器 /usr/bin/opmusic
+# 启动器 /usr/bin/tianjian-music
 mkdir -p "$STAGE/usr/bin"
 cat > "$STAGE/usr/bin/$APP_ID" <<EOF
 #!/bin/bash
-exec /opt/$APP_ID/OpMusic "\$@"
+exec /opt/$APP_ID/webdav-music-player "\$@"
 EOF
 chmod 755 "$STAGE/usr/bin/$APP_ID"
 
@@ -41,7 +41,7 @@ Exec=$APP_ID
 Terminal=false
 Type=Application
 Categories=Audio;Music;
-StartupWMClass=OpMusic
+StartupWMClass=webdav-music-player
 EOF
 
 # 控制信息
@@ -56,7 +56,7 @@ Architecture: arm64
 Maintainer: QM-346 <qm346@example.com>
 Depends: libgtk-3-0, libnss3, libasound2, libxss1, libgbm1, libx11-xcb1, libdrm2
 Installed-Size: $SIZE_KB
-Description: OpMusic
+Description: 天剑音乐播放器
  支持 WebDAV 的本地音乐播放器（桌面端），内置 ffmpeg 可转码 WMA/APE。
 EOF
 

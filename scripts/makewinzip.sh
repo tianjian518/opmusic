@@ -6,7 +6,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 OUT="$ROOT/release"
 VERSION="$(node -p "require('$ROOT/package.json').version")"
-ZIP="$OUT/OpMusic-${VERSION}-win-x64.zip"
+ZIP="$OUT/天剑音乐播放器-${VERSION}-win-x64.zip"
 
 # electron-builder --win dir --x64 解包目录为 win-x64-unpacked（指定架构时带 arch 后缀）
 SRC="$ROOT/release/win-x64-unpacked"

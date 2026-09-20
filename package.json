@@ -1,13 +1,13 @@
 {
-  "name": "opmusic",
+  "name": "webdav-music-player",
   "version": "0.1.0",
-  "description": "OpMusic —— 支持 WebDAV 的自托管音乐播放器",
+  "description": "支持 WebDAV 的本地音乐播放器（桌面端，对标主流播放器）",
   "main": "dist-electron/main/index.js",
   "author": {
     "name": "QM-346",
     "email": "qm346@example.com"
   },
-  "homepage": "https://github.com/QM-346/opmusic",
+  "homepage": "https://github.com/QM-346/music-player",
   "license": "MIT",
   "scripts": {
     "dev": "vite",
@@ -47,7 +47,7 @@
   },
   "build": {
     "appId": "com.qm346.tianjian",
-    "productName": "OpMusic",
+    "productName": "天剑音乐播放器",
     "copyright": "Copyright © 2026 QM-346",
     "files": [
       "dist-electron/**/*",

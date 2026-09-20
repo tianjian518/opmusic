@@ -8,7 +8,7 @@ import { getTrackTags, getTrackDuration } from './tags'
 import { appStore } from './store'
 
 // 主进程异常兜底：记录堆栈到文件（便于排查），并以带堆栈的对话框替代默认的模糊报错。
-const ERROR_LOG = '/tmp/opmusic-main-error.log'
+const ERROR_LOG = '/tmp/tianjian-main-error.log'
 function logError(where: string, err: unknown) {
   const detail = err && (err as any).stack ? (err as any).stack : String(err)
   const msg = `[${new Date().toISOString()}] ${where}: ${detail}\n`
@@ -22,7 +22,7 @@ function logError(where: string, err: unknown) {
 process.on('uncaughtException', (err) => {
   logError('uncaughtException', err)
   try {
-    dialog.showErrorBox('主进程出错', `OpMusic 主进程发生异常（已记录到 ${ERROR_LOG}）：\n\n${err?.stack || String(err)}`)
+    dialog.showErrorBox('主进程出错', `天剑音乐播放器主进程发生异常（已记录到 ${ERROR_LOG}）：\n\n${err?.stack || String(err)}`)
   } catch {
     /* ignore */
   }
@@ -46,7 +46,7 @@ function createWindow() {
     height: 760,
     minWidth: 900,
     minHeight: 600,
-    title: 'OpMusic',
+    title: '天剑音乐播放器',
     backgroundColor: '#0f0f12',
     webPreferences: {
       preload: path.join(__dirname, '../preload/index.js'),
@@ -188,12 +188,12 @@ function buildAppMenu(): Menu {
       label: '帮助',
       submenu: [
         {
-          label: '关于 OpMusic',
+          label: '关于天剑音乐播放器',
           click: () => {
             dialog.showMessageBox({
               type: 'info',
-              title: '关于 OpMusic',
-              message: 'OpMusic',
+              title: '关于 天剑音乐播放器',
+              message: '天剑音乐播放器',
               detail: '连接 WebDAV 网盘、播放本地与云端音乐的桌面播放器。\n版本 0.1.0'
             })
           }
