@@ -3,10 +3,109 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import crypto from 'node:crypto'
-import { spawn, execFileSync } from 'node:child_process'
+import { spawn, execFileSync, execFile } from 'node:child_process'
 import { getClient, getAccount } from './webdav'
 import { coverBytesFor } from './meta'
-import { FFMPEG_BIN } from './ffmpeg'
+import { FFMPEG_BIN, FFPROBE_BIN } from './ffmpeg'
+
+// ---------------------------------------------------------------------------
+// 权威编码判定：Chromium 的 <audio> 只能解 mp3/aac/flac/wav/ogg/opus/vorbis。
+// 遇到 ac3 / eac3（Dolby Atmos 全景声，常见于 .m4a）/ dts / wma / ape 等一律解不了，
+// <audio> 会直接抛 error code 4（MEDIA_ERR_SRC_NOT_SUPPORTED）。
+// 仅靠扩展名不可靠（.m4a 既可能是 AAC 也可能是 E-AC3），所以这里用 ffprobe 读真实编码。
+// 只读文件头部即可拿到编码信息，秒级完成；结果按 (acct,path) 缓存，避免重复探测。
+// ---------------------------------------------------------------------------
+const CHROMIUM_OK_CODECS = new Set([
+  'mp3',
+  'aac',
+  'flac',
+  'vorbis',
+  'opus',
+  'pcm_s16le',
+  'pcm_s24le',
+  'pcm_u8',
+  'pcm_f32le',
+  'pcm_s32le',
+  'alac',
+  'mp3float'
+])
+const codecCache = new Map<string, boolean>() // true = 需要转码
+
+function probeNeedsTranscode(accountId: string, filePath: string): Promise<boolean> {
+  const key = accountId + '|' + filePath
+  const hit = codecCache.get(key)
+  if (hit !== undefined) return Promise.resolve(hit)
+  return new Promise((resolve) => {
+    // 取头部 1MB 足够解析出容器头里的编码信息
+    let url = ''
+    const acc = getAccount(accountId)
+    if (!acc) return resolve(guessByExt(filePath))
+    const origin = acc.url.replace(/\/+$/, '')
+    url = origin + encPath(filePath)
+    const headers: Record<string, string> = { Range: 'bytes=0-1048575' }
+    if (acc.username != null) {
+      headers['Authorization'] =
+        'Basic ' + Buffer.from(`${acc.username}:${acc.password ?? ''}`).toString('base64')
+    }
+    ;(async () => {
+      let buf: Buffer | null = null
+      try {
+        let u = url
+        for (let hop = 0; hop < 6; hop++) {
+          const resp = await fetch(u, { headers, redirect: 'manual' })
+          if (resp.status >= 300 && resp.status < 400) {
+            const loc = resp.headers.get('location')
+            if (!loc) break
+            u = new URL(loc, u).toString()
+            delete headers['Authorization']
+            continue
+          }
+          if (resp.status >= 400) break
+          buf = Buffer.from(await resp.arrayBuffer())
+          break
+        }
+      } catch {
+        /* ignore */
+      }
+      if (!buf || !buf.length) return resolve(guessByExt(filePath))
+      // ffprobe 从 stdin 读头部，取第一条音频流的编码名
+      const p = execFile(
+        FFPROBE_BIN,
+        [
+          '-v', 'error',
+          '-select_streams', 'a:0',
+          '-show_entries', 'stream=codec_name',
+          '-of', 'default=nw=1:nk=1',
+          'pipe:0'
+        ],
+        { timeout: 8000 },
+        (err, stdout) => {
+          const codec = (stdout || '').trim().toLowerCase()
+          let need: boolean
+          if (!codec) {
+            need = guessByExt(filePath)
+          } else {
+            need = !CHROMIUM_OK_CODECS.has(codec)
+          }
+          codecCache.set(key, need)
+          resolve(need)
+        }
+      )
+      p.stdin?.on('error', () => {})
+      try {
+        p.stdin?.write(buf)
+        p.stdin?.end()
+      } catch {
+        resolve(guessByExt(filePath))
+      }
+    })()
+  })
+}
+
+// ffprobe 失败时按扩展名兜底
+function guessByExt(filePath: string): boolean {
+  return /\.(wma|ape)$/i.test(filePath)
+}
 
 // 探测本机 ffmpeg 是否可用（用于 WMA/APE 等浏览器原生不支持的格式实时转码）
 let FFMPEG_OK = false
@@ -286,13 +385,24 @@ export function startStreamServer(): Promise<{ port: number; base: string }> {
         const filePath = decodeURIComponent(url.searchParams.get('path') || '')
 
         if (url.pathname === '/stream') {
-          const wantTranscode =
-            url.searchParams.get('transcode') === '1' || /\.(wma|ape)$/i.test(filePath)
+          // 先看扩展名（快），不确定时再用 ffprobe 按真实编码判定（权威）。
+          // 典型场景：.m4a 里装的是 Dolby Atmos 的 E-AC3，Chromium 解不了必须转码。
+          const forceTranscode = url.searchParams.get('transcode') === '1'
+          const extSaysTranscode = /\.(wma|ape)$/i.test(filePath)
+          const ambiguous = /\.(m4a|mp4|aac)$/i.test(filePath)
+          let wantTranscode = forceTranscode || extSaysTranscode
+          if (!wantTranscode && (ambiguous || !forceTranscode)) {
+            try {
+              wantTranscode = await probeNeedsTranscode(acct, filePath)
+            } catch {
+              wantTranscode = false
+            }
+          }
 
           if (wantTranscode) {
             if (!FFMPEG_OK) {
               res.statusCode = 415
-              res.end('本机未检测到 ffmpeg，无法转码 WMA / APE')
+              res.end('本机未检测到 ffmpeg，无法转码 WMA / APE / Dolby Atmos 等格式')
               return
             }
             const cacheFile = cachePathFor(acct, filePath)

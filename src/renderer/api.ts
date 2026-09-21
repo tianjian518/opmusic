@@ -106,10 +106,29 @@ export function isPlayable(name: string): boolean {
   const ext = name.split('.').pop()?.toLowerCase() || ''
   return AUDIO_EXT.includes(ext)
 }
+
+// 容器扩展名「靠不住」的情况：同一个 .m4a 可能装 AAC（Chromium 能播），
+// 也可能装 E-AC3 / AC3（Dolby Atmos 全景声，Chromium 无解码器，实测 canPlayType 返回空串）。
+// 这类文件必须先转码，否则 <audio> 直接报 error code 4（MEDIA_ERR_SRC_NOT_SUPPORTED）。
+// 判据：扩展名是 m4a/mp4/aac 且「路径或文件名」带 Dolby Atmos 标记 —— 实测这类资源
+// 全部是 E-AC3；更重要的是：主进程会再按真实编码做一次权威判定（见 transcodeHint）。
+const ATMOS_RE = /(dolby[\s._-]*atmos|e-?ac-?3|atmos)/i
+const AMBIGUOUS_EXT = ['m4a', 'mp4', 'aac']
+
+export function extOf(name: string): string {
+  return name.split('.').pop()?.toLowerCase() || ''
+}
+
 // 是否需要主进程转码（浏览器原生不支持的格式）
-export function needsTranscode(name: string): boolean {
-  const ext = name.split('.').pop()?.toLowerCase() || ''
-  return UNPLAYABLE_EXT.includes(ext)
+export function needsTranscode(name: string, fullPath?: string): boolean {
+  const ext = extOf(name)
+  if (UNPLAYABLE_EXT.includes(ext)) return true
+  // Dolby Atmos：.m4a 里的 E-AC3，Chromium 解不了
+  if (AMBIGUOUS_EXT.includes(ext)) {
+    const hay = `${fullPath || ''}${name}`
+    if (ATMOS_RE.test(hay)) return true
+  }
+  return false
 }
 
 // 从文件名（及所在目录）解析 歌手/歌名/专辑，用于在线刮削与歌词搜索

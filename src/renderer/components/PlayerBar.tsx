@@ -101,7 +101,7 @@ export default function PlayerBar() {
     let cancelled = false
     const a = audioRef.current
     if (!a) return
-    const transcode = needsTranscode(cur.name)
+    const transcode = needsTranscode(cur.name, cur.path)
     // 关键：先「立即」设置音频源并开始播放，不要等标签/封面（否则大文件经 WebDAV 读取 +
     // ffprobe 要数秒，造成切歌卡 7~8 秒才响应）。标签、封面、时长改为并行获取、不阻塞播放。
     api.stream.url(cur.accountId, cur.path).then((u) => {
@@ -287,7 +287,7 @@ export default function PlayerBar() {
           if (code === 3 || code === 4) {
             const c = useStore.getState().queue[useStore.getState().currentIndex]
             const name = c?.name || ''
-            if (needsTranscode(name)) {
+            if (needsTranscode(name, c?.path)) {
               useStore
                 .getState()
                 .setToast(
@@ -297,6 +297,12 @@ export default function PlayerBar() {
               useStore
                 .getState()
                 .setToast(`「${name}」无法播放：音频解码失败，可能是文件损坏或服务器不支持 Range 续传`)
+            }
+            // 编码判定兜底：扩展名看不出问题（如装成 AAC 的 .m4a）但实际解不了时，
+            // 强制走一次转码重试，避免整首歌完全放不出来。
+            if (!el.src.includes('transcode=1')) {
+              el.src = el.src + (el.src.includes('?') ? '&' : '?') + 'transcode=1'
+              if (useStore.getState().isPlaying) el.play().catch(() => {})
             }
           } else {
             console.error('[audio] 播放出错:', code, el.error?.message, el.src)
